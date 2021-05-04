@@ -1,7 +1,7 @@
 {
 	"name": "thewebsolver/tws-license-manager-server",
 	"description": "The Web Solver License Manager Server",
-	"license": "GPL-v3-or-later",
+	"license": "GPL-3.0-or-later",
 	"authors": [
 		{
 			"name": "hsehszroc",
