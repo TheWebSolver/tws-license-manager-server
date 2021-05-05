@@ -1,13 +1,42 @@
-<?php // phpcs:disable
+<?php // phpcs:ignore WordPress.NamingConventions
+/**
+ * The Web Solver Licence Manager Server.
+ *
+ * @package TheWebSolver\License_Manager\Server
+ *
+ * -----------------------------------
+ * DEVELOPED-MAINTAINED-SUPPPORTED BY
+ * -----------------------------------
+ * ███║     ███╗   ████████████████
+ * ███║     ███║   ═════════██████╗
+ * ███║     ███║        ╔══█████═╝
+ *  ████████████║      ╚═█████
+ * ███║═════███║      █████╗
+ * ███║     ███║    █████═╝
+ * ███║     ███║   ████████████████╗
+ * ╚═╝      ╚═╝    ═══════════════╝
+ */
 
-namespace TheWebSolver\License_Manager\REST_API;
+namespace TheWebSolver\License_Manager;
 
-use Aws\S3\S3Client;
+use TheWebSolver\License_Manager\API\S3;
 
+/**
+ * TheWebSolver\License_Manager\Server class.
+ */
 final class Server {
-
+	/**
+	 * TheWebSolver\License_Manager\API\S3 Instance.
+	 *
+	 * @var S3
+	 */
 	public $s3;
 
+	/**
+	 * Instantiates Server.
+	 *
+	 * @return Server
+	 */
 	public static function init() {
 		static $plugin;
 
@@ -18,8 +47,10 @@ final class Server {
 		return $plugin;
 	}
 
-	private function __construct() {}
-
-	public function get_storage() {
+	/**
+	 * Private Constructor.
+	 */
+	private function __construct() {
+		$this->s3 = new S3( 'index.php' );
 	}
 }
