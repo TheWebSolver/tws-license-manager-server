@@ -20,6 +20,7 @@
 namespace TheWebSolver\License_Manager;
 
 use TheWebSolver\License_Manager\API\S3;
+use TheWebSolver\License_Manager\Components\Product;
 
 /**
  * TheWebSolver\License_Manager\Server class.
@@ -31,6 +32,20 @@ final class Server {
 	 * @var S3
 	 */
 	public $s3;
+
+	/**
+	 * TheWebSolver\License_Manager\Components\Product instance.
+	 *
+	 * @var Product
+	 */
+	public $product;
+
+	/**
+	 * Plugin prefixer.
+	 *
+	 * @var string
+	 */
+	const PREFIX = 'tws_license_manager_server';
 
 	/**
 	 * Instantiates Server.
@@ -51,6 +66,7 @@ final class Server {
 	 * Private Constructor.
 	 */
 	private function __construct() {
-		$this->s3 = new S3( 'index.php' );
+		$this->s3      = new S3();
+		$this->product = new Product();
 	}
 }
