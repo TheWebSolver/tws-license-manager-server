@@ -9,7 +9,8 @@
 		}
 	],
 	"require": {
-		"aws/aws-sdk-php": "^3.180"
+		"aws/aws-sdk-php": "^3.180",
+		"thewebsolver/tws-setting-framework": "dev-codegarage"
 	},
 	"keywords": [
 		"API",
