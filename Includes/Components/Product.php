@@ -1,6 +1,6 @@
 <?php // phpcs:ignore WordPress.NamingConventions
 /**
- * The Web Solver Licence Manager Server WooCommerce Product Data tabs handler.
+ * The Web Solver Licence Manager Server WooCommerce Product handler.
  *
  * @package TheWebSolver\License_Manager\Server\WooCommerce
  *
@@ -20,11 +20,16 @@
 namespace TheWebSolver\License_Manager\Components;
 
 use TheWebSolver\License_Manager\Server;
+use TheWebSolver\License_Manager\Single_Instance;
 
 /**
- * WooCommerce Product Handler.
+ * TheWebSolver\License_Manager\Components\Product class.
+ *
+ * Handles WooCommerce Product.
  */
 class Product {
+	use Single_Instance;
+
 	/**
 	 * Amazon S3 fields in data tabs.
 	 *
@@ -40,9 +45,39 @@ class Product {
 	private $meta_suffix = '_product_details';
 
 	/**
-	 * Constructor
+	 * Product meta key for using stock for license.
+	 *
+	 * @var string
 	 */
-	public function __construct() {
+	const STOCK_META = 'lmfwc_licensed_product_use_stock';
+
+	/**
+	 * Product meta key to check if generator was used or not.
+	 *
+	 * @var string
+	 */
+	const USE_GENERATOR_META = 'lmfwc_licensed_product_use_generator';
+
+	/**
+	 * Product meta key for getting the assigned license generator ID.
+	 *
+	 * @var string
+	 */
+	const ASSIGNED_GENERATOR_META = 'lmfwc_licensed_product_assigned_generator';
+
+	/**
+	 * Product meta key for generating number of licenses.
+	 *
+	 * @var string
+	 */
+	const QUANTITY_META = 'lmfwc_licensed_product_delivered_quantity';
+
+	/**
+	 * Sets up WooCommerce product.
+	 *
+	 * @return Product
+	 */
+	public function instance() {
 		// WooCommerce hooks for adding product meta.
 		add_action( 'add_meta_boxes_product', array( $this, 'add_product_server_information' ) );
 
@@ -55,6 +90,8 @@ class Product {
 			add_action( 'woocommerce_variation_options_download', array( $this, 'add_variation_s3_storage_details' ), 10, 3 );
 			add_action( 'woocommerce_admin_process_variation_object', array( $this, 'process_variable_product_data' ), 10, 2 );
 		}
+
+		return $this;
 	}
 
 	/**
@@ -78,8 +115,24 @@ class Product {
 	 */
 	public function get_data( int $id ) {
 		$meta = get_post_meta( $id, Server::PREFIX . $this->meta_suffix, true );
+		$meta = is_array( $meta ) ? $meta[ Server::PREFIX ] : array();
+		$data = array();
 
-		return is_array( $meta ) ? $meta : array();
+		foreach ( array_keys( $this->get_meta_fields() ) as $id ) {
+			// Ignore the separators.
+			if ( $this->is_separator( $id ) ) {
+				continue;
+			}
+
+			// Ignore fields not saved.
+			if ( ! isset( $meta[ $id ] ) || empty( $meta[ $id ] ) ) {
+				continue;
+			}
+
+			$data[ $id ] = $meta[ $id ];
+		}
+
+		return $data;
 	}
 
 	/**
@@ -105,14 +158,14 @@ class Product {
 				'type'  => 'text',
 			),
 			'_product_last_updated' => array(
-				'label' => __( 'Last updated Date', 'tws-license-manager-server' ),
+				'label' => __( 'Last updated Date (YYYY-MM-DD)', 'tws-license-manager-server' ),
 				'type'  => 'text',
 			),
 			'_product_logo'         => array(
 				'label' => __( 'Logo', 'tws-license-manager-server' ),
 				'type'  => 'text',
 			),
-			'_product_last_updated' => array(
+			'_product_cover'        => array(
 				'label' => __( 'Cover Photo', 'tws-license-manager-server' ),
 				'type'  => 'text',
 			),
@@ -210,7 +263,7 @@ class Product {
 			$meta = array();
 			foreach ( $this->get_meta_fields() as $id => $args ) {
 				// Ignore the separators.
-				if ( '_product_separator' === $id || '_storage_separator' === $id ) {
+				if ( $this->is_separator( $id ) ) {
 					continue;
 				}
 
@@ -235,7 +288,7 @@ class Product {
 			$placeholder = isset( $args['placeholder'] ) ? $args['placeholder'] : '';
 
 			// Add the separators as title.
-			if ( '_product_separator' === $id || '_storage_separator' === $id ) {
+			if ( $this->is_separator( $id ) ) {
 				echo '<h4 class="' . esc_attr( $id ) . '">' . esc_html( $args['title'] ) . '</h4>';
 
 				if ( isset( $args['subtitle'] ) ) {
@@ -265,7 +318,7 @@ class Product {
 
 		foreach ( $fields as $id => $args ) {
 			// Ignore the separators.
-			if ( '_product_separator' === $id || '_storage_separator' === $id ) {
+			if ( $this->is_separator( $id ) ) {
 				continue;
 			}
 
@@ -366,5 +419,16 @@ class Product {
 
 			woocommerce_wp_text_input( $s3_field );
 		}
+	}
+
+	/**
+	 * Defines which meta key are treated as separators.
+	 *
+	 * @param string $id The meta ID.
+	 *
+	 * @return bool
+	 */
+	private function is_separator( string $id ) {
+		return '_product_separator' === $id || '_storage_separator' === $id;
 	}
 }
