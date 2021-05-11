@@ -21,6 +21,7 @@ namespace TheWebSolver\License_Manager;
 
 use LicenseManagerForWooCommerce\AdminMenus;
 use TheWebSolver\Core\Setting\Container;
+use TheWebSolver\License_Manager\API\Manager;
 use TheWebSolver\License_Manager\API\S3;
 use TheWebSolver\License_Manager\Components\Checkout;
 use TheWebSolver\License_Manager\Components\Order;
@@ -33,6 +34,15 @@ defined( 'ABSPATH' ) || exit;
  * TheWebSolver\License_Manager\Server class.
  */
 final class Server {
+	use Single_Instance;
+
+	/**
+	 * TheWebSolver\License_Manager\API\Manager Instance.
+	 *
+	 * @var Manager
+	 */
+	public $manager;
+
 	/**
 	 * TheWebSolver\License_Manager\API\S3 Instance.
 	 *
@@ -76,33 +86,35 @@ final class Server {
 	public $order;
 
 	/**
-	 * Instantiates Server.
-	 *
-	 * @return Server
+	 * Server instance.
 	 */
-	public static function init() {
-		static $plugin;
-
-		if ( ! is_a( $plugin, get_class() ) ) {
-			$plugin = new self();
-		}
-
-		return $plugin;
-	}
-
-	/**
-	 * Private Constructor.
-	 */
-	private function __construct() {
+	public function instance() {
 		$this->container = new Container( self::PREFIX, AdminMenus::LICENSES_PAGE );
+		$this->manager   = Manager::load()->instance();
 		$this->s3        = S3::load()->instance();
 		$this->product   = Product::load()->instance();
 		$this->checkout  = Checkout::load()->instance();
 		$this->order     = Order::load()->instance();
 
+		$this->create_options();
+
 		add_action( 'after_setup_theme', array( $this, 'add_admin_page' ) );
 
 		add_filter( 'hzfex_license_manager_server_pre_response_dispatch', array( $this, 'dispatch_product_details' ) );
+	}
+
+	/**
+	 * Adds options page sections and fields to the container.
+	 */
+	private function create_options() {
+		// Generate basic config options section.
+		$this->manager->set_section_priority( 10 )->add_section();
+
+		// Generate Storage options section.
+		$this->s3->set_section_priority( 15 )->add_section();
+
+		// Generate checkout options section.
+		$this->checkout->set_section_priority( 20 )->add_section();
 	}
 
 	/**
@@ -128,7 +140,8 @@ final class Server {
 	 * @return array The modified response data.
 	 */
 	public function dispatch_product_details( array $data ) {
-		$meta = $this->product->get_data( $data['productId'] );
+		$id   = isset( $data['productId'] ) ? $data['productId'] : 0;
+		$meta = $this->product->get_data( $id );
 
 		// Add meta as response data.
 		$data['meta'] = $meta;
