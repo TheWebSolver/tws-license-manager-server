@@ -1,6 +1,6 @@
 <?php // phpcs:ignore WordPress.NamingConventions
 /**
- * The Web Solver Licence Manager Server WooCommerce Checkout handler.
+ * The Web Solver Licence Manager Server WooCommerce Order handler.
  *
  * @package TheWebSolver\License_Manager\Server\WooCommerce
  *
@@ -96,14 +96,16 @@ final class Order {
 	 * Gets all license from an order.
 	 *
 	 * @param int $order_id The order ID for which license(s) to retrieve.
+	 *
+	 * @return bool True if successful, false otherwise.
 	 */
 	private function update_license_validity( $order_id ) {
 		$licenses = License_Handler::instance()->findAllBy( array( 'order_id' => $order_id ) );
-		$license  = 0;
+		$complete = false;
 
 		// Order must save all generated licenses in an array.
 		if ( ! is_array( $licenses ) ) {
-			return $license;
+			return $complete;
 		}
 
 		/** @var License $license The License object. */ // phpcs:ignore
@@ -141,10 +143,13 @@ final class Order {
 
 						// Check if generator has number of days for expiry set.
 						if ( $generator->getExpiresIn() ) {
-							$this->update_expiry_date( $license, $generator );
+							$this->update_expiry_date( $license, $generator, true );
 
 							// Clear the checkout tranisent.
 							delete_transient( $key );
+
+							// Flag successful update of the license.
+							$complete = true;
 						}
 					}
 				}
@@ -153,6 +158,8 @@ final class Order {
 				break;
 			}
 		}
+
+		return $complete;
 	}
 
 	/**
@@ -160,8 +167,9 @@ final class Order {
 	 *
 	 * @param License   $license   The ordered product license key.
 	 * @param Generator $generator The ordered product license generator.
+	 * @param bool      $update    True to update the license, false to return data to be updated.
 	 */
-	public function update_expiry_date( License $license, Generator $generator ) {
+	public function update_expiry_date( License $license, Generator $generator, $update = false ) {
 		// Extend license validity by generator expiry days (same format used by lmfwc).
 		$expires_in = 'P' . $generator->getExpiresIn() . 'D';
 
@@ -201,7 +209,9 @@ final class Order {
 		);
 
 		// Update license with new data.
-		License_Handler::instance()->update( $license->getId(), $data );
+		if ( $update ) {
+			License_Handler::instance()->update( $license->getId(), $data );
+		}
 
 		return $data;
 	}
