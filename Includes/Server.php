@@ -21,6 +21,7 @@ namespace TheWebSolver\License_Manager;
 
 use LicenseManagerForWooCommerce\AdminMenus;
 use TheWebSolver\Core\Setting\Container;
+use TheWebSolver\Core\Setting\Plugin;
 use TheWebSolver\License_Manager\API\Manager;
 use TheWebSolver\License_Manager\API\S3;
 use TheWebSolver\License_Manager\Components\Checkout;
@@ -89,6 +90,7 @@ final class Server {
 	 * Server instance.
 	 */
 	public function instance() {
+		Plugin::boot();
 		$this->container = new Container( self::PREFIX, AdminMenus::LICENSES_PAGE );
 		$this->manager   = Manager::load();
 		$this->s3        = S3::load();
