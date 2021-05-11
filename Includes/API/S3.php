@@ -123,30 +123,6 @@ class S3 {
 			)
 		)
 		->add_field(
-			's3_key',
-			self::OPTION,
-			array(
-				'label'             => __( 'Amazon S3 Key', 'tws-license-manager-server' ),
-				'desc'              => __( 'Enter your AWS IAM User programmable API Key.', 'tws-license-manager-server' ),
-				'type'              => 'text',
-				'sanitize_callback' => 'sanitize_text_field',
-				'class'             => 'widefat',
-				'priority'          => 15,
-			)
-		)
-		->add_field(
-			's3_secret',
-			self::OPTION,
-			array(
-				'label'             => __( 'Amazon S3 Secret', 'tws-license-manager-server' ),
-				'desc'              => __( 'Enter your AWS IAM User programmable API Secret.', 'tws-license-manager-server' ),
-				'type'              => 'text',
-				'sanitize_callback' => 'sanitize_text_field',
-				'class'             => 'widefat',
-				'priority'          => 20,
-			)
-		)
-		->add_field(
 			's3_bucket',
 			self::OPTION,
 			array(
@@ -155,6 +131,30 @@ class S3 {
 				'type'              => 'text',
 				'sanitize_callback' => 'sanitize_text_field',
 				'class'             => 'widefat',
+				'priority'          => 15,
+			)
+		)
+		->add_field(
+			's3_key',
+			self::OPTION,
+			array(
+				'label'             => __( 'Amazon S3 Key', 'tws-license-manager-server' ),
+				'desc'              => __( 'Enter your AWS IAM User programmable API Key.', 'tws-license-manager-server' ),
+				'type'              => 'password',
+				'sanitize_callback' => 'sanitize_text_field',
+				'class'             => 'widefat hz_password_control',
+				'priority'          => 20,
+			)
+		)
+		->add_field(
+			's3_secret',
+			self::OPTION,
+			array(
+				'label'             => __( 'Amazon S3 Secret', 'tws-license-manager-server' ),
+				'desc'              => __( 'Enter your AWS IAM User programmable API Secret.', 'tws-license-manager-server' ),
+				'type'              => 'password',
+				'sanitize_callback' => 'sanitize_text_field',
+				'class'             => 'widefat hz_password_control',
 				'priority'          => 25,
 			)
 		);
