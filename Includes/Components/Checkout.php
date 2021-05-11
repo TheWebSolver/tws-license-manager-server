@@ -19,6 +19,7 @@
 
 namespace TheWebSolver\License_Manager\Components;
 
+use TheWebSolver\License_Manager\Options_Interface;
 use TheWebSolver\License_Manager\Server;
 use TheWebSolver\License_Manager\Single_Instance;
 
@@ -30,7 +31,7 @@ defined( 'ABSPATH' ) || exit;
  *
  * Handles WooCommerce checkout.
  */
-class Checkout {
+class Checkout implements Options_Interface {
 	use Single_Instance;
 
 	/**
@@ -60,6 +61,20 @@ class Checkout {
 	 * @var bool
 	 */
 	private $redirect = true;
+
+	/**
+	 * The options section priority.
+	 *
+	 * @var int
+	 */
+	private $option_priority = 10;
+
+	/**
+	 * The options.
+	 *
+	 * @var array
+	 */
+	private $options;
 
 	/**
 	 * The checkout license input field key.
@@ -102,6 +117,7 @@ class Checkout {
 	 */
 	public function instance() {
 		$options                = wp_parse_args( (array) get_option( self::OPTION, array() ), $this->defaults );
+		$this->options          = $options;
 		$this->disable_guest    = isset( $options['disable_guest'] ) && 'on' === $options['disable_guest'] ? true : false;
 		$this->check_license    = isset( $options['license_field'] ) && 'on' === $options['license_field'] ? true : false;
 		$this->section_position = isset( $options['license_field_position'] ) && ! empty( $options['license_field_position'] ) ? $options['license_field_position'] : 'billing';
@@ -110,9 +126,38 @@ class Checkout {
 
 		$this->init_hooks();
 
-		add_action( 'admin_init', array( $this, 'add_page_section' ) );
+		return $this;
+	}
+
+	/**
+	 * Sets section priority.
+	 *
+	 * @param int $priority The `admin_init` hook priority.
+	 *
+	 * @inheritDoc
+	 */
+	public function set_section_priority( int $priority ) {
+		$this->option_priority = $priority;
 
 		return $this;
+	}
+
+	/**
+	 * Adds Checkout options.
+	 *
+	 * @inheritDoc
+	 */
+	public function add_section() {
+		add_action( 'admin_init', array( $this, 'add_page_section' ), $this->option_priority );
+	}
+
+	/**
+	 * Gets saved options.
+	 *
+	 * @inheritDoc
+	 */
+	public function get_options() {
+		return $this->options;
 	}
 
 	/**
@@ -126,7 +171,7 @@ class Checkout {
 		add_action( 'woocommerce_before_checkout_process', array( $this, 'process' ), 10 );
 
 		if ( $this->check_license ) {
-			add_action( "woocommerce_{$this->section_position}", array( $this, 'add_section' ) );
+			add_action( "woocommerce_{$this->section_position}", array( $this, 'add_checkout_field' ) );
 		}
 
 		if ( $this->limit_item ) {
@@ -154,8 +199,7 @@ class Checkout {
 		$checkout_email = isset( $data['billing_email'] ) ? $data['billing_email'] : '';
 		$license_key    = isset( $_POST[ self::META_KEY ] ) ? sanitize_text_field( wp_unslash( $_POST[ self::META_KEY ] ) ) : false; // phpcs:ignore WordPress.Security.NonceVerification.Missing
 
-		// phpcs:disable
-		// TODO: remove test codes.
+		// phpcs:disable -- Test codes to check all checkout fields posted data key/value.
 		// $errors->add( 'post', maybe_serialize( $_POST ) );
 		// foreach ( $data as $key => $value ) {
 		// 	$errors->add( 'data_key', $key );
@@ -171,15 +215,14 @@ class Checkout {
 		// License key set but user not logged in, $data => error.
 		if ( ! is_user_logged_in() ) {
 			/**
-			 * WPHOOK: Filter -> message if order has more than one product.
+			 * WPHOOK: Filter -> message if user not logged in but license key is entered.
 			 *
 			 * @param string $message The error message to display after "Place Order" btn is clicked.
 			 * @param string $context The context where message triggers. Possible values are:
 			 * * `string` `not_logged_in`   - When user is not logged in.
 			 * * `string` `order_count`     - When order has more than one product.
 			 * * `string` `invalid_license` - License key is invalid.
-			 *
-			 * @var string
+			 * @var   string
 			 */
 			$message = apply_filters(
 				'hzfex_license_manager_server_checkout_license_check_error',
@@ -206,8 +249,7 @@ class Checkout {
 				 *
 				 * @param string $message The error message to display after "Place Order" btn is clicked.
 				 * @param string $context The context where message triggers.
-				 *
-				 * @var string
+				 * @var   string
 				 */
 				$message = apply_filters(
 					'hzfex_license_manager_server_checkout_license_check_error',
@@ -245,12 +287,11 @@ class Checkout {
 		}
 
 		/**
-		 * WPHOOK: Filter -> message if order has more than one product.
+		 * WPHOOK: Filter -> message if not a valid license key.
 		 *
 		 * @param string $message The error message to display after "Place Order" btn is clicked.
 		 * @param string $context The context where message triggers.
-		 *
-		 * @var string
+		 * @var   string
 		 */
 		$message = apply_filters(
 			'hzfex_license_manager_server_checkout_license_check_error',
@@ -288,7 +329,7 @@ class Checkout {
 				// Old order with this license is parent of this order.
 				$order->update_meta_data( self::PARENT_ORDER_KEY, $parent_id );
 
-				// Hack lmfwc order metadata to prevent generating license for this order.
+				// Hack lmfwc order meta to prevent generating license for this order.
 				$order->update_meta_data( 'lmfwc_order_complete', 1 );
 			}
 		}
@@ -352,7 +393,6 @@ class Checkout {
 	 */
 	public function manage_fields( $fields ) {
 		if ( ! is_user_logged_in() && $this->disable_guest ) {
-
 			$account_fields = array( 'account_username', 'account_password', 'account_password-2' );
 
 			foreach ( $account_fields as $account_field ) {
@@ -411,18 +451,41 @@ class Checkout {
 	 *
 	 * @param \WC_Checkout $checkout The current checkout instance.
 	 */
-	public function add_section( $checkout ) {
+	public function add_checkout_field( $checkout ) {
+		// phpcs:disable WordPress.Security.NonceVerification.Missing
+		$value = isset( $_POST[ self::META_KEY ] )
+		? sanitize_text_field( wp_unslash( $_POST[ self::META_KEY ] ) )
+		: '';
+		// phpcs:enable
+
+		/**
+		 * WPHOOK: Filter -> change checkout license key field details.
+		 *
+		 * @param string[] $field The field args.
+		 * @var   string[]
+		 */
+		$field = apply_filters(
+			'hzfex_license_manager_server_checkout_license_key_field',
+			array(
+				'heading'     => __( 'License Details', 'tws-license-manager-server' ),
+				'label'       => __( 'Existing License Key (optional)', 'tws-license-manager-server' ),
+				'placeholder' => 'XXXX-XXXX-XXXX-XXXX',
+				'desc'        => __( 'Enter the existing license key purchased with the product in the order, if any. The existing license will be renewed with a new expiry date and no new license will be generated with this order.', 'tws-license-manager-server' ),
+			)
+		);
 		?>
-		<div id="hz_license_form">
-			<h3 class="license_details"><?php esc_html_e( 'License Details', 'tws-license-manager-server' ); ?></h3>
+		<div id="hz_checkout_license_field">
+			<?php if ( isset( $field['heading'] ) ) : ?>
+				<h3 class="license_details"><?php echo esc_html( $field['heading'] ); ?></h3>
+			<?php endif; ?>
 			<p class="form-row " id="license_field">
-				<label for="license">
-					<?php esc_html_e( 'License Key (optional)', 'tws-license-manager-server' ); ?>
-				</label>
+				<label for="license"><?php echo esc_html( $field['label'] ); ?></label>
 				<span class="woocommerce-input-wrapper">
-					<input type="text" class="input-text" name="<?php echo esc_attr( self::META_KEY ); ?>" id="license" placeholder="<?php esc_attr_e( 'License key from previous order', 'tws-license-manager-server' ); ?>" value="">
+					<input type="text" class="input-text" name="<?php echo esc_attr( self::META_KEY ); ?>" id="license" placeholder="<?php echo esc_attr( $field['placeholder'] ); ?>" value="<?php esc_attr( $value ); ?>">
 				</span>
-				<span class="desc"><small><em><?php esc_html_e( 'Enter the expired license key generated for the product you are going to order, if any. The expired license will be renewed with new expiry date and no new license will be generated with this order.', 'tws-license-manager-server' ); ?></em></small></span>
+				<?php if ( isset( $field['desc'] ) ) : ?>
+					<span class="desc"><small><em><?php echo esc_html( $field['desc'] ); ?></em></small></span>
+				<?php endif; ?>
 			</p>
 		</div>
 		<?php
@@ -432,12 +495,34 @@ class Checkout {
 	 * Adds admin options section for WC checkout.
 	 */
 	public function add_page_section() {
-		Server::init()->container
+		/**
+		 * WPHOOK: Filter -> placement options for license key field.
+		 *
+		 * @param string[] $options The placement options with action hook as key, label as value.
+		 *                          This is for future compatibility if or when hook tagname changes.
+		 *                          NOTE: The hook key must ignore `woocommerce_` prefix.
+		 * @var   string[]
+		 */
+		$placement_options = apply_filters(
+			'hzfex_license_manager_server_checkout_option_license_field_position',
+			array(
+				'checkout_billing'                     => __( 'Before Billing Address', 'tws-license-manager-server' ),
+				'checkout_shipping'                    => __( 'After Billing Address', 'tws-license-manager-server' ),
+				'before_order_notes'                   => __( 'Before Order Notes', 'tws-license-manager-server' ),
+				'after_order_notes'                    => __( 'After Order Notes', 'tws-license-manager-server' ),
+				'checkout_order_review'                => __( 'Before Order Review', 'tws-license-manager-server' ),
+				'review_order_before_payment'          => __( 'Before Order Payment Details', 'tws-license-manager-server' ),
+				'checkout_before_terms_and_conditions' => __( 'After Order Payment Details', 'tws-license-manager-server' ),
+				'review_order_before_submit'           => __( 'Before Order Submit Button', 'tws-license-manager-server' ),
+			)
+		);
+
+		Server::load()->container
 		->add_section(
 			self::OPTION,
 			array(
 				'tab_title' => __( 'Checkout', 'tws-license-manager-server' ),
-				'title'     => __( 'WooCommerce Checkout configuration', 'tws-license-manager-server' ),
+				'title'     => __( 'WooCommerce Checkout Configuration', 'tws-license-manager-server' ),
 				'desc'      => __( 'Setup checkout page for handling orders, checkout fields, and license validation.', 'tws-license-manager-server' ),
 			)
 		)
@@ -476,14 +561,7 @@ class Checkout {
 				'type'     => 'select',
 				'class'    => 'widefat hz_select_control',
 				'priority' => 15,
-				'options'  => array(
-					'checkout_before_customer_details' => __( 'Before Customer Details', 'tws-license-manager-server' ),
-					'checkout_billing'                 => __( 'Before Billing Address', 'tws-license-manager-server' ),
-					'checkout_shipping'                => __( 'After Billing Address', 'tws-license-manager-server' ),
-					'before_order_notes'               => __( 'Before Order Notes', 'tws-license-manager-server' ),
-					'after_order_notes'                => __( 'After Order Notes', 'tws-license-manager-server' ),
-					'checkout_after_customer_details'  => __( 'After Customer Details', 'tws-license-manager-server' ),
-				),
+				'options'  => $placement_options,
 				'default'  => $this->defaults['license_field_position'],
 			)
 		)
