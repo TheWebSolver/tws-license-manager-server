@@ -90,13 +90,13 @@ final class Server {
 	 */
 	public function instance() {
 		$this->container = new Container( self::PREFIX, AdminMenus::LICENSES_PAGE );
-		$this->manager   = Manager::load()->instance();
-		$this->s3        = S3::load()->instance();
-		$this->product   = Product::load()->instance();
-		$this->checkout  = Checkout::load()->instance();
-		$this->order     = Order::load()->instance();
+		$this->manager   = Manager::load();
+		$this->s3        = S3::load();
+		$this->product   = Product::load();
+		$this->checkout  = Checkout::load();
+		$this->order     = Order::load();
 
-		$this->create_options();
+		$this->init_instances();
 
 		add_action( 'after_setup_theme', array( $this, 'add_admin_page' ) );
 
@@ -106,15 +106,12 @@ final class Server {
 	/**
 	 * Adds options page sections and fields to the container.
 	 */
-	private function create_options() {
-		// Generate basic config options section.
-		$this->manager->set_section_priority( 10 )->add_section();
-
-		// Generate Storage options section.
-		$this->s3->set_section_priority( 15 )->add_section();
-
-		// Generate checkout options section.
-		$this->checkout->set_section_priority( 20 )->add_section();
+	private function init_instances() {
+		$this->manager->instance()->set_section_priority( 10 )->add_section();
+		$this->s3->instance()->set_section_priority( 15 )->add_section();
+		$this->checkout->instance()->set_section_priority( 20 )->add_section();
+		$this->product->instance();
+		$this->order->instance();
 	}
 
 	/**
