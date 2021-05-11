@@ -20,7 +20,7 @@
 namespace TheWebSolver\License_Manager;
 
 use LicenseManagerForWooCommerce\AdminMenus;
-use TheWebSolver\Core\Setting\Container;
+use TheWebSolver\Core\Setting\Component\Container;
 use TheWebSolver\Core\Setting\Plugin;
 use TheWebSolver\License_Manager\API\Manager;
 use TheWebSolver\License_Manager\API\S3;
