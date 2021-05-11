@@ -19,16 +19,22 @@
 
 namespace TheWebSolver\License_Manager\API;
 
-use LicenseManagerForWooCommerce\Repositories\Resources\License as LicenseHandler;
 use LicenseManagerForWooCommerce\Models\Resources\License;
+use TheWebSolver\License_Manager\Options_Interface;
+use TheWebSolver\License_Manager\Server;
+use TheWebSolver\License_Manager\Single_Instance;
 
 // Exit if accessed directly.
 defined( 'ABSPATH' ) || exit;
 
 /**
- * License Manager Server.
+ * TheWebSolver\License_Manager\API\Manager class.
+ *
+ * Handles license server request validation and response modification.
  */
-final class Manager {
+final class Manager implements Options_Interface {
+	use Single_Instance;
+
 	/**
 	 * API Validation data.
 	 *
@@ -48,54 +54,117 @@ final class Manager {
 	 *
 	 * @var bool
 	 */
-	private $debug = true;
+	private $debug = false;
 
 	/**
-	 * Whether to update license status to active(3)/inactive(4).
+	 * The options section priority.
 	 *
-	 * @var bool
+	 * @var int
 	 */
-	private $update_status = true;
+	private $option_priority = 10;
 
 	/**
-	 * Data to be added on license activation.
+	 * The options.
 	 *
 	 * @var array
 	 */
-	private $activation_data = array();
+	private $options;
 
 	/**
-	 * Connector constructor.
+	 * Options key.
 	 *
-	 * @param bool   $debug   Server in test mode. Do not set to `true` in production.
-	 *                        When set to `false`, only license activation/deactivation
-	 *                        from client license form is possible.
-	 * @param string $license The request route endpoint. Must be true when debug is `false`.
-	 *                        The endpoint will be appended after version.
-	 *                        ***true*** for `licenses`, ***false*** for `generators`.
+	 * @var string
 	 */
-	public function __construct( $debug = false, $license = true ) {
-		$this->debug   = $debug;
-		$request_base  = '/lmfwc/v2/';
-		$endpoint      = $license ? 'licenses' : 'generators';
-		$request_route = $request_base . $endpoint;
-
-		// Set properties.
-		$this->route = $request_route;
-	}
+	const OPTION = 'tws_license_manager_server_basic_config';
 
 	/**
-	 * Sets validation data to check request against.
+	 * Default options value.
 	 *
-	 * @param string[] $data Same validation key/value pair set on client site
-	 *                       with client site method `Manager::validation_data()`.
+	 * @var string[]
+	 */
+	private $defaults = array(
+		'debug_mode'                => 'off',
+		'debug_endpoint'            => 'off',
+		'license_validate_response' => 'License not found.',
+		'email_validate_response'   => 'Email address not found.',
+		'order_validate_response'   => 'Order not found.',
+		'name_validate_response'    => 'Product not found.',
+	);
+
+	/**
+	 * Sets up server manager.
 	 *
 	 * @return Manager
 	 */
-	public function set_validation( $data ) {
-		$this->validation_data = $data;
+	public function instance() {
+		$options  = wp_parse_args( get_option( self::OPTION, array(), $this->defaults ) );
+		$base     = '/lmfwc/v2/';
+		$endpoint = 'licenses';
+
+		foreach ( $this->defaults as $key => $field ) {
+			// Set debug option and continue.
+			if ( 'debug_mode' === $key ) {
+				$this->debug = 'on' === $options[ $key ] ? true : false;
+
+				continue;
+			}
+
+			// Set endpoint option and continue.
+			if ( 'debug_endpoint' === $key ) {
+				$endpoint = $this->debug && 'on' === $options[ $key ] ? 'generators' : 'licenses';
+
+				continue;
+			}
+
+			if ( ! empty( $options[ $key ] ) ) {
+				$this->validation_data[ $key ] = $options[ $key ];
+			}
+		}
+
+		// Set properties.
+		$this->options = $options;
+		$this->route   = $base . $endpoint;
 
 		return $this;
+	}
+
+	/**
+	 * Sets section priority.
+	 *
+	 * @param int $priority The `admin_init` hook priority.
+	 *
+	 * @inheritDoc
+	 */
+	public function set_section_priority( int $priority ) {
+		$this->option_priority = $priority;
+
+		return $this;
+	}
+
+	/**
+	 * Adds General options.
+	 *
+	 * @inheritDoc
+	 */
+	public function add_section() {
+		add_action( 'admin_init', array( $this, 'add_page_section' ), $this->option_priority );
+	}
+
+	/**
+	 * Gets saved options.
+	 *
+	 * @inheritDoc
+	 */
+	public function get_options() {
+		return $this->options;
+	}
+
+	/**
+	 * Process client request and send response back.
+	 */
+	public function process() {
+		$this->validate();
+		$this->update();
 	}
 
 	/**
@@ -107,14 +176,8 @@ final class Manager {
 
 	/**
 	 * Updates license status and metadata.
-	 *
-	 * @param bool  $status True to set status as `active/inactive` and vice-versa.
-	 * @param array $data   The data to add on license activation.
 	 */
-	public function update( $status = true, $data = array() ) {
-		$this->update_status   = $status;
-		$this->activation_data = is_array( $data ) ? $data : array( $data );
-
+	public function update() {
 		// Modify response and perform additional tasks.
 		add_filter( 'lmfwc_rest_api_pre_response', array( $this, 'parse_response' ), 10, 3 );
 	}
@@ -215,9 +278,9 @@ final class Manager {
 
 		// No license key in debug mode, $request => valid, WP_Error otherwise.
 		if ( ! $license ) {
-			$msg = isset( $this->validation_data['license_key'] )
-			? $this->validation_data['license_key']
-			: 'License key not found';
+			$msg = isset( $this->validation_data['license_validate_response'] )
+			? $this->validation_data['license_validate_response']
+			: $this->defaults['license_validate_response'];
 
 			return $this->debug ? true : $this->request_error( $msg, 404, $error_data );
 		}
@@ -283,12 +346,12 @@ final class Manager {
 	private function is_valid_request( $license, $parameters, $client_url ) {
 		$metadata = array();
 
-		// Product name didn't match with WooCommerce Product Title, $request => WP_Error.
+		// Product slug didn't match with WooCommerce Product Title, $request => WP_Error.
 		if ( array_key_exists( 'slug', $parameters ) ) {
 			$product = wc_get_product( $license->getProductId() );
-			$msg     = isset( $this->validation_data['slug'] )
-			? $this->validation_data['slug']
-			: 'Product not found.';
+			$msg     = isset( $this->validation_data['name_validate_response'] )
+			? $this->validation_data['name_validate_response']
+			: $this->defaults['name_validate_response'];
 
 			$error = $this->request_error( $msg, 404 );
 
@@ -303,9 +366,9 @@ final class Manager {
 		// Order ID didn't match with WooCommerce order ID, $request => WP_Error.
 		if ( array_key_exists( 'order_id', $parameters ) ) {
 			$order = wc_get_order( $license->getOrderId() );
-			$msg   = isset( $this->validation_data['order_id'] )
-			? $this->validation_data['order_id']
-			: 'Order not found.';
+			$msg   = isset( $this->validation_data['order_validate_response'] )
+			? $this->validation_data['order_validate_response']
+			: $this->defaults['order_validate_response'];
 
 			$error = $this->request_error( $msg, 404 );
 
@@ -320,9 +383,9 @@ final class Manager {
 		// Email address didn't match with WordPress user email, $request => WP_Error.
 		if ( array_key_exists( 'email', $parameters ) ) {
 			$user = get_userdata( $license->getUserId() );
-			$msg  = isset( $this->validation_data['email'] )
-			? $this->validation_data['email']
-			: 'Email not found.';
+			$msg  = isset( $this->validation_data['email_validate_response'] )
+			? $this->validation_data['email_validate_response']
+			: $this->defaults['email_validate_response'];
 
 			$error = $this->request_error( $msg, 404 );
 
@@ -401,13 +464,11 @@ final class Manager {
 		}
 
 		// Possible status of a license: SOLD(1), DELIVERED(2), ACTIVE(3), & INACTIVE(4).
-		// Since, activation/deactivation happening here, status can only be 3 or 4.
-		$status_number = 3;
-		$status_text   = 'active';
+		// Since, we are saving as license meta, it will be 'active' or 'inactive'.
+		$status_text = 'active';
 
 		if ( 'deactivate' === $form_state ) {
-			$status_number = 4;
-			$status_text   = 'inactive';
+			$status_text = 'inactive';
 		}
 
 		$license_key = $data['licenseKey'];
@@ -422,14 +483,6 @@ final class Manager {
 		// Get email from transient metadata.
 		$saved_email = isset( $metadata['email'] ) ? $metadata['email'] : '';
 
-		// Update active/inactive status if no of times it can be activated is only 1.
-		if ( $this->update_status && 1 === $data['timesActivatedMax'] ) {
-			LicenseHandler::instance()->update( $license->getId(), array( 'status' => $status_number ) );
-
-			// Send updated status number as response data.
-			$data['status'] = $status_number;
-		}
-
 		// Check if key is present.
 		if ( $meta_key ) {
 			// Set active status as meta value.
@@ -438,12 +491,22 @@ final class Manager {
 			// Send meta key as response data.
 			$data['key'] = $meta_key;
 
-			// Set additional activation parameters passed as meta value.
-			if ( ! empty( $this->activation_data ) ) {
-				$metadata['data'] = $this->activation_data;
-			}
+			/**
+			 * WPHOOK: Filter -> License meta value.
+			 *
+			 * @param array   $license_meta Meta value to save to database.
+			 * @param License $license      Current license object.
+			 * @param string  $form_state   Current client form state. Can be `activate` or `deactivate`.
+			 * @var   array
+			 */
+			$license_meta = apply_filters(
+				'hzfex_license_manager_server_response_license_meta',
+				$metadata,
+				$license,
+				$form_state,
+			);
 
-			$this->update_meta( $license->getId(), $meta_key, $metadata );
+			$this->update_meta( $license->getId(), $meta_key, $license_meta );
 
 			// Clear transient.
 			delete_transient( $transient );
@@ -482,7 +545,7 @@ final class Manager {
 
 		// Trim the URI after license key (where query starts).
 		$key     = substr( $from_key, 0, strpos( $from_key, '?' ) );
-		$license = \lmfwc_get_license( $key );
+		$license = lmfwc_get_license( $key );
 
 		// Add error messages to response data if license has expired and update the the meta.
 		if ( $license ) {
@@ -503,7 +566,9 @@ final class Manager {
 				$data['metadata'] = $metadata;
 			}
 
+			// Send license key and license product ID along with data. TODO: implement parameter.
 			$data['license_key'] = $key;
+			$data['productId']   = $license->getProductId();
 		}
 
 		/**
@@ -596,15 +661,136 @@ final class Manager {
 	 *
 	 * If no meta key exists, new meta key/value will be added, else same meta key will be updated.
 	 *
-	 * @param string $id    The license ID.
+	 * @param int    $id    The license ID.
 	 * @param string $key   The meta key to add/update value for.
 	 * @param mixed  $value The meta value.
 	 */
-	public function update_meta( string $id, string $key, $value ) {
+	public function update_meta( int $id, string $key, $value ) {
 		if ( false === lmfwc_get_license_meta( $id, $key, true ) ) {
 			lmfwc_add_license_meta( $id, $key, $value );
 		} else {
 			lmfwc_update_license_meta( $id, $key, $value );
 		}
+	}
+
+	/**
+	 * Adds admin options section for Server General setting.
+	 */
+	public function add_page_section() {
+		Server::load()->container
+		->add_section(
+			self::OPTION,
+			array(
+				'tab_title' => __( 'General', 'tws-license-manager-server' ),
+				'title'     => __( 'Basic Server Configruation', 'tws-license-manager-server' ),
+				'desc'      => __( 'Setup the license server with recommended options. These options will handle how request to be validated and response to be parsed.', 'tws-license-manager-server' ),
+			)
+		)
+		->add_field(
+			'debug_mode',
+			self::OPTION,
+			array(
+				'label'             => __( 'Turn On Debug Mode', 'tws-license-manager-server' ),
+				'desc'              => sprintf(
+					'%1$s <span class="option_notice alert">%2$s</span>',
+					__( 'Prepare the server to talk to the client when the client is also in debug mode. If debug mode is turned on, none of the below options will work except "Enable Generator Endpoint".', 'tws-license-manager-server' ),
+					__( 'Always turn "OFF" the debug mode when site is in production.', 'tws-license-manager-server' )
+				),
+				'type'              => 'checkbox',
+				'sanitize_callback' => 'sanitize_key',
+				'class'             => 'widefat hz_switcher_control',
+				'priority'          => 5,
+				'default'           => 'off',
+			)
+		)
+		->add_field(
+			'debug_endpoint',
+			self::OPTION,
+			array(
+				'label'             => __( 'Enable Generator Endpoint', 'tws-license-manager-server' ),
+				'desc'              => sprintf(
+					'%1$s <span class="option_notice alert">%2$s</span>',
+					__( 'Enable "generators" as endpoint instead of "licenses". Enabling this will let making request for "/lmfwc/v2/generators" from client.', 'tws-license-manager-server' ),
+					__( 'This option will not work if debug mode is turned "OFF".', 'tws-license-manager-server' )
+				),
+				'type'              => 'checkbox',
+				'sanitize_callback' => 'sanitize_key',
+				'class'             => 'widefat hz_switcher_control',
+				'priority'          => 5,
+				'default'           => 'off',
+			)
+		)
+		->add_field(
+			'license_validate_response',
+			self::OPTION,
+			array(
+				'label'             => __( 'License Validation Response', 'tws-license-manager-server' ),
+				'desc'              => sprintf(
+					'%1$s <span class="option_notice alert">%2$s</span>',
+					__( 'Message to send back to client if license key is invalid/not found/does not exist.', 'tws-license-manager-server' ),
+					__( 'This is a must and so will be validated. Highly recommended you set your own response message than default.', 'tws-license-manager-server' )
+				),
+				'type'              => 'text',
+				'sanitize_callback' => 'sanitize_text_field',
+				'class'             => 'widefat',
+				'priority'          => 10,
+				'default'           => $this->defaults['license_validate_response'],
+				'placeholder'       => $this->defaults['license_validate_response'],
+			)
+		)
+		->add_field(
+			'email_validate_response',
+			self::OPTION,
+			array(
+				'label'             => __( 'Email Validation', 'tws-license-manager-server' ),
+				'desc'              => sprintf(
+					'%1$s <span class="option_notice success">%2$s</span>',
+					__( 'Message to send back to client if user email address is invalid/not found/does not exist.', 'tws-license-manager-server' ),
+					__( 'If request is not sent from client to validate email, it is completely ignored.', 'tws-license-manager-server' )
+				),
+				'type'              => 'text',
+				'sanitize_callback' => 'sanitize_text_field',
+				'class'             => 'widefat',
+				'priority'          => 15,
+				'default'           => $this->defaults['email_validate_response'],
+				'placeholder'       => $this->defaults['email_validate_response'],
+			)
+		)
+		->add_field(
+			'order_validate_response',
+			self::OPTION,
+			array(
+				'label'             => __( 'Order Validation', 'tws-license-manager-server' ),
+				'desc'              => sprintf(
+					'%1$s <span class="option_notice success">%2$s</span>',
+					__( 'Message to send back to client if Order ID is invalid/not found/does not exist.', 'tws-license-manager-server' ),
+					__( 'If request is not sent from client to validate order, it is completely ignored.', 'tws-license-manager-server' )
+				),
+				'type'              => 'text',
+				'sanitize_callback' => 'sanitize_text_field',
+				'class'             => 'widefat',
+				'priority'          => 20,
+				'default'           => $this->defaults['order_validate_response'],
+				'placeholder'       => $this->defaults['order_validate_response'],
+			)
+		)
+		->add_field(
+			'name_validate_response',
+			self::OPTION,
+			array(
+				'label'             => __( 'Product Slug Validation', 'tws-license-manager-server' ),
+				'desc'              => sprintf(
+					'%1$s <span class="option_notice success">%2$s</span>',
+					__( 'Message to send back to client if product slug is invalid/not found/does not exist.', 'tws-license-manager-server' ),
+					__( ' If request is not sent from client to validate product slug, it is completely ignored.', 'tws-license-manager-server' )
+				),
+				'type'              => 'text',
+				'sanitize_callback' => 'sanitize_text_field',
+				'class'             => 'widefat',
+				'priority'          => 25,
+				'default'           => $this->defaults['name_validate_response'],
+				'placeholder'       => $this->defaults['name_validate_response'],
+			)
+		);
 	}
 }
