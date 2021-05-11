@@ -21,13 +21,15 @@ namespace TheWebSolver\License_Manager\API;
 
 use Aws\S3\S3Client;
 use TheWebSolver\License_Manager\Server;
-use LicenseManagerForWooCommerce\AdminMenus;
+use TheWebSolver\License_Manager\Options_Interface;
 use TheWebSolver\License_Manager\Single_Instance;
 
 /**
- * Amazon S3 Storage Class.
+ * TheWebSolver\License_Manager\API\S3 class.
+ *
+ * Handles Amazon S3 SDK.
  */
-class S3 {
+class S3 implements Options_Interface {
 	use Single_Instance;
 
 	/**
@@ -36,6 +38,13 @@ class S3 {
 	 * @var string
 	 */
 	const OPTION = 'tws_license_manager_s3_config';
+
+	/**
+	 * The options section priority.
+	 *
+	 * @var int
+	 */
+	private $option_priority = 10;
 
 	/**
 	 * Default options value.
@@ -51,14 +60,19 @@ class S3 {
 	);
 
 	/**
+	 * The options.
+	 *
+	 * @var string[]
+	 */
+	private $options;
+
+	/**
 	 * Sets up Amazon S3.
 	 *
 	 * @return S3
 	 */
 	public function instance() {
-		$options = wp_parse_args( (array) get_option( self::OPTION, array() ), $this->defaults );
-
-		add_action( 'admin_init', array( $this, 'add_page_section' ) );
+		$this->options = wp_parse_args( (array) get_option( self::OPTION, array() ), $this->defaults );
 
 		return $this;
 	}
@@ -79,17 +93,39 @@ class S3 {
 	}
 
 	/**
+	 * Sets options section priority to container.
+	 *
+	 * @param int $priority The `admin_init` hook priority.
+	 *
+	 * @inheritDoc
+	 */
+	public function set_section_priority( int $priority ) {
+		$this->option_priority = $priority;
+
+		return $this;
+	}
+
+	/**
+	 * Adds options section to container.
+	 *
+	 * @inheritDoc
+	 */
+	public function add_section() {
+		add_action( 'admin_init', array( $this, 'add_page_section' ), $this->option_priority );
+	}
+
+	/**
 	 * Adds Amazon S3 page.
 	 *
-	 * @return void
+	 * @inheritDoc
 	 */
 	public function add_page_section() {
-		Server::init()->container
+		Server::load()->container
 		->add_section(
 			self::OPTION,
 			array(
 				'tab_title' => __( 'Storage', 'tws-license-manager-server' ),
-				'title'     => __( 'Amazon S3 configuration', 'tws-license-manager-server' ),
+				'title'     => __( 'Amazon S3 Configuration', 'tws-license-manager-server' ),
 				'desc'      => sprintf(
 					'%1$s %2$s',
 					__( 'This plugin uses Amazon PHP SDK v3 for connecting with Amazon S3. Learn more about it here:', 'tws-license-manager-server' ),
@@ -158,5 +194,14 @@ class S3 {
 				'priority'          => 25,
 			)
 		);
+	}
+
+	/**
+	 * Gets S3 Options.
+	 *
+	 * @inheritDoc
+	 */
+	public function get_options() {
+		return $this->options;
 	}
 }
