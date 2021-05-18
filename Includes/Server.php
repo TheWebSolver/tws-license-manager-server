@@ -19,7 +19,6 @@
 
 namespace TheWebSolver\License_Manager;
 
-use LicenseManagerForWooCommerce\AdminMenus;
 use TheWebSolver\Core\Setting\Component\Container;
 use TheWebSolver\Core\Setting\Plugin;
 use TheWebSolver\License_Manager\API\Manager;
@@ -27,6 +26,7 @@ use TheWebSolver\License_Manager\API\S3;
 use TheWebSolver\License_Manager\Components\Checkout;
 use TheWebSolver\License_Manager\Components\Order;
 use TheWebSolver\License_Manager\Components\Product;
+use LicenseManagerForWooCommerce\Models\Resources\License;
 
 // Exit if accessed directly.
 defined( 'ABSPATH' ) || exit;
@@ -91,7 +91,7 @@ final class Server {
 	 */
 	public function instance() {
 		Plugin::boot();
-		$this->container = new Container( self::PREFIX, AdminMenus::LICENSES_PAGE );
+		$this->container = new Container( self::PREFIX, HZFEX_SETTING_MENU );
 		$this->manager   = Manager::load();
 		$this->s3        = S3::load();
 		$this->product   = Product::load();
@@ -103,17 +103,20 @@ final class Server {
 		add_action( 'after_setup_theme', array( $this, 'add_admin_page' ) );
 
 		add_filter( 'hzfex_license_manager_server_pre_response_dispatch', array( $this, 'dispatch_product_details' ) );
+		add_filter( 'hzfex_license_manager_server_pre_response_validate', array( $this, 'validate_license' ), 10, 5 );
 	}
 
 	/**
 	 * Adds options page sections and fields to the container.
 	 */
 	private function init_instances() {
-		$this->manager->instance()->set_section_priority( 10 )->add_section();
-		$this->s3->instance()->set_section_priority( 15 )->add_section();
-		$this->checkout->instance()->set_section_priority( 20 )->add_section();
+		$this->manager->instance()->set_section_priority( 10 )->add_page_section();
+		$this->s3->instance()->set_section_priority( 15 )->add_page_section();
+		$this->checkout->instance()->set_section_priority( 20 )->add_page_section();
 		$this->product->instance();
 		$this->order->instance();
+
+		$this->manager->process();
 	}
 
 	/**
@@ -139,11 +142,126 @@ final class Server {
 	 * @return array The modified response data.
 	 */
 	public function dispatch_product_details( array $data ) {
-		$id   = isset( $data['productId'] ) ? $data['productId'] : 0;
-		$meta = $this->product->get_data( $id );
+		$id                   = isset( $data['productId'] ) ? $data['productId'] : 0;
+		$data['product_meta'] = $this->product->get_data( $id );
 
-		// Add meta as response data.
-		$data['meta'] = $meta;
+		return $data;
+	}
+
+	/**
+	 * Validates response data before sending back.
+	 *
+	 * @param array        $data       The response data.
+	 * @param string       $key        The license meta key.
+	 * @param array        $metadata   The saved metadata.
+	 * @param array        $parameters The request query parameters.
+	 * @param bool|License $license    The license.
+	 *
+	 * @return array
+	 */
+	public function validate_license( array $data, string $key, array $metadata, array $parameters, $license ) {
+		// License can't be generated from request parameters, $data => error.
+		if ( ! $license ) {
+			return array(
+				'error' => __( 'License can not be verified.', 'tws-license-manager-server' ),
+				'code'  => 400,
+				'data'  => $data,
+			);
+		}
+
+		// No license status meta saved, $data => error.
+		if ( ! isset( $metadata['status'] ) ) {
+			return array(
+				'error' => __( 'License status can not be verified.', 'tws-license-manager-server' ),
+				'code'  => 401,
+			);
+		}
+
+		// The license state.
+		$state = (string) $data['state'];
+
+		// Make license expire when the time comes.
+		if (
+			'expired' === $state &&
+			( ! isset( $metadata['expired'] ) || 'yes' !== $metadata['expired'] )
+		) {
+			$metadata['expired'] = 'yes';
+			$this->manager->update_meta( $license->getId(), $key, $metadata );
+		}
+
+		$flag        = isset( $parameters['flag'] ) ? (string) $parameters['flag'] : '';
+		$is_schedule = $flag && 'cron' === $flag;
+		$is_update   = $flag && ( 'update_themes' === $flag || 'update_plugins' === $flag );
+		$meta        = $this->product->get_data( $license->getProductId() );
+
+		// Request is a scheduled (cron job) event, $data => valid.
+		if ( $is_schedule ) {
+			return $this->manager->send_scheduled_response( $license, $key, $metadata, $meta, $state );
+		}
+
+		// Request is not made for product updates, stop further processing and send data & meta.
+		// This is the stage where it is assumed that validation is performed without any flag.
+		// Nothing happens on server side. License data and product meta are sent back as response.
+		if ( ! $is_update ) {
+			return array(
+				'code' => 200,
+				'data' => $data,
+				'meta' => $meta,
+			);
+		}
+
+		// License is not active, $data => error.
+		if ( 'active' !== $metadata['status'] ) {
+			return array(
+				'error' => __( 'License is not active.', 'tws-license-manager-server' ),
+				'code'  => 402,
+				'data'  => $data,
+			);
+		}
+
+		// License has expired, $data => error.
+		if ( 'expired' === $state ) {
+			return array(
+				'error' => __( 'License has expired.', 'tws-license-manager-server' ),
+				'code'  => 403,
+				'data'  => $data,
+			);
+		}
+
+		// Send product info along with response.
+		$data['product_meta'] = $meta;
+
+		// Initialize download package URL.
+		$package = '';
+
+		// Make Amazon S3 request and get presigned URL.
+		if ( 'on' === $this->s3->get_option()['use_amazon_s3'] ) {
+			$package = $this->s3->get_presigned_url_for( $license );
+
+			if ( is_wp_error( $package ) ) {
+				return array(
+					'error' => $package->get_error_message(),
+					'code'  => $package->get_error_data(),
+					'data'  => $data,
+				);
+			}
+		}
+
+		/**
+		 * WPHOOK: Filter -> package URL to send as response data.
+		 *
+		 * Use this hook to hijack and modify package URL before sending as response.
+		 * Best used in case where Amazon S3 is not used for storing the product zip file.
+		 *
+		 * @param string $package The package URL.
+		 * @var   string
+		 */
+		$url = apply_filters( 'hzfex_license_manager_server_product_package_url', $package );
+
+		// Set the package URL as response.
+		if ( $url && is_string( $url ) ) {
+			$data['package'] = $url;
+		}
 
 		return $data;
 	}
