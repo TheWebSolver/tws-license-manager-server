@@ -83,11 +83,11 @@ final class Order {
 	 */
 	public function validate_order_with_license( $order_id, $order ) {
 		// Hack we did at checkout for lmfwc order meta was unsuccessful, stop further processing.
-		if ( ! get_post_meta( $order_id, 'lmfwc_order_complete', true ) ) {
+		if ( 1 !== absint( get_post_meta( $order_id, 'lmfwc_order_complete', true ) ) ) {
 			return;
 		}
 
-		$parent_order_id = get_post_meta( $order_id, Checkout::PARENT_ORDER_KEY, true );
+		$parent_order_id = absint( get_post_meta( $order_id, Checkout::PARENT_ORDER_KEY, true ) );
 
 		$this->update_license_validity( $parent_order_id );
 	}
@@ -114,7 +114,8 @@ final class Order {
 			$key = sha1( $license->getDecryptedLicenseKey() );
 
 			// Get checkout transient data.
-			$transient = get_transient( $key );
+			$transient_value = get_transient( $key );
+			$transient       = is_array( $transient_value ) ? (array) $transient_value : array();
 
 			// Get parent order ID from transient.
 			$parent_id = isset( $transient['order_id'] ) ? (int) $transient['order_id'] : 0;
@@ -208,7 +209,6 @@ final class Order {
 			'status'     => 2, // DELIVERED.
 		);
 
-		// Update license with new data.
 		if ( $update ) {
 			License_Handler::instance()->update( $license->getId(), $data );
 		}
