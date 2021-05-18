@@ -1,8 +1,8 @@
 <?php // phpcs:ignore WordPress.NamingConventions
 /**
- * The Web Solver Licence Manager Server WooCommerce Checkout handler.
+ * The Web Solver Licence Manager Server Options Interface.
  *
- * @package TheWebSolver\License_Manager\Server\WooCommerce
+ * @package TheWebSolver\License_Manager\Server
  *
  * -----------------------------------
  * DEVELOPED-MAINTAINED-SUPPPORTED BY
@@ -50,25 +50,25 @@ interface Options_Interface {
 	 * Initializes the section creation.
 	 *
 	 * Internally, it will add `admin_init` action hook
-	 * with method `add_page_section` as callable method.
-	 */
-	public function add_section();
-
-	/**
-	 * Creates sections and fields to the container.
-	 *
-	 * This method must be a callable method for `admin_init` hook
-	 * initialized by the method `add_option`, and
-	 * with the priority set by `set_section_priority`.
+	 * with `add_section` as the callable method.
 	 */
 	public function add_page_section();
 
 	/**
-	 * Get section options.
+	 * Creates sections and fields to the container.
+	 *
+	 * This must be a callable method for `admin_init` hook
+	 * initialized by the method `add_page_section`, and
+	 * with the priority set by `set_section_priority`.
+	 */
+	public function add_section();
+
+	/**
+	 * Get section option.
 	 *
 	 * Returns the section options as an array values.
 	 *
 	 * @return array
 	 */
-	public function get_options();
+	public function get_option();
 }
