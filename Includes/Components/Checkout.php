@@ -98,6 +98,13 @@ class Checkout implements Options_Interface {
 	const PARENT_ORDER_KEY = 'tws_license_manager_parent_order';
 
 	/**
+	 * Renewal license key passsed from client as URL parameter.
+	 *
+	 * @var string
+	 */
+	const CLIENT_LICENSE = 'tws_license_manager_client_license';
+
+	/**
 	 * Default options value.
 	 *
 	 * @var array
@@ -147,8 +154,8 @@ class Checkout implements Options_Interface {
 	 *
 	 * @inheritDoc
 	 */
-	public function add_section() {
-		add_action( 'admin_init', array( $this, 'add_page_section' ), $this->option_priority );
+	public function add_page_section() {
+		add_action( 'admin_init', array( $this, 'add_section' ), $this->option_priority );
 	}
 
 	/**
@@ -156,7 +163,7 @@ class Checkout implements Options_Interface {
 	 *
 	 * @inheritDoc
 	 */
-	public function get_options() {
+	public function get_option() {
 		return $this->options;
 	}
 
@@ -164,6 +171,13 @@ class Checkout implements Options_Interface {
 	 * Inits WooCommerce Checkout hooks.
 	 */
 	private function init_hooks() {
+		// Save the renewal license key for 10 minutes when link clicked after license expiry on client.
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended
+		if ( isset( $_REQUEST['tws_license_key'] ) ) {
+			setcookie( self::CLIENT_LICENSE, sanitize_text_field( wp_unslash( $_REQUEST['tws_license_key'] ) ), time() + ( MINUTE_IN_SECONDS * 10 ) );
+		}
+		// phpcs:enable
+
 		add_filter( 'woocommerce_get_script_data', array( $this, 'filter_script' ), 10, 2 );
 		add_action( 'woocommerce_before_checkout_form', array( $this, 'require_new_account' ), -1 );
 		add_action( 'woocommerce_checkout_fields', array( $this, 'manage_fields' ), 10 );
@@ -171,7 +185,7 @@ class Checkout implements Options_Interface {
 		add_action( 'woocommerce_before_checkout_process', array( $this, 'process' ), 10 );
 
 		if ( $this->check_license ) {
-			add_action( "woocommerce_{$this->section_position}", array( $this, 'add_checkout_field' ) );
+			add_action( "woocommerce_{$this->section_position}", array( $this, 'add_license_field' ) );
 		}
 
 		if ( $this->limit_item ) {
@@ -451,11 +465,13 @@ class Checkout implements Options_Interface {
 	 *
 	 * @param \WC_Checkout $checkout The current checkout instance.
 	 */
-	public function add_checkout_field( $checkout ) {
+	public function add_license_field( $checkout ) {
+		$license_key = isset( $_COOKIE[ self::CLIENT_LICENSE ] ) ? sanitize_text_field( wp_unslash( $_COOKIE[ self::CLIENT_LICENSE ] ) ) : '';
+
 		// phpcs:disable WordPress.Security.NonceVerification.Missing
 		$value = isset( $_POST[ self::META_KEY ] )
 		? sanitize_text_field( wp_unslash( $_POST[ self::META_KEY ] ) )
-		: '';
+		: $license_key;
 		// phpcs:enable
 
 		/**
@@ -481,7 +497,7 @@ class Checkout implements Options_Interface {
 			<p class="form-row " id="license_field">
 				<label for="license"><?php echo esc_html( $field['label'] ); ?></label>
 				<span class="woocommerce-input-wrapper">
-					<input type="text" class="input-text" name="<?php echo esc_attr( self::META_KEY ); ?>" id="license" placeholder="<?php echo esc_attr( $field['placeholder'] ); ?>" value="<?php esc_attr( $value ); ?>">
+					<input type="text" class="input-text" name="<?php echo esc_attr( self::META_KEY ); ?>" id="license" placeholder="<?php echo esc_attr( $field['placeholder'] ); ?>" value="<?php echo esc_attr( $value ); ?>">
 				</span>
 				<?php if ( isset( $field['desc'] ) ) : ?>
 					<span class="desc"><small><em><?php echo esc_html( $field['desc'] ); ?></em></small></span>
@@ -493,8 +509,10 @@ class Checkout implements Options_Interface {
 
 	/**
 	 * Adds admin options section for WC checkout.
+	 *
+	 * @inheritDoc
 	 */
-	public function add_page_section() {
+	public function add_section() {
 		/**
 		 * WPHOOK: Filter -> placement options for license key field.
 		 *
