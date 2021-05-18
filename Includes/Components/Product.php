@@ -109,16 +109,29 @@ class Product {
 	/**
 	 * Gets the product data.
 	 *
-	 * @param int $id The product ID for which license was issued.
+	 * @param int  $id       The product ID for which license was issued.
+	 * @param bool $dispatch Whether data is being sent as response.
 	 *
 	 * @return array
 	 */
-	public function get_data( int $id ) {
+	public function get_data( int $id, $dispatch = true ) {
 		$meta = get_post_meta( $id, Server::PREFIX . $this->meta_suffix, true );
 		$meta = is_array( $meta ) ? $meta[ Server::PREFIX ] : array();
-		$data = array();
+		$data = array( 'id' => $id );
+		$keys = array_keys( $this->get_meta_fields() );
 
-		foreach ( array_keys( $this->get_meta_fields() ) as $id ) {
+		// Do not send Amazon S3 details back to client.
+		if ( $dispatch ) {
+			if ( isset( $meta['_product_bucket'] ) ) {
+				unset( $meta['_product_bucket'] );
+			}
+
+			if ( isset( $meta['_product_filename'] ) ) {
+				unset( $meta['_product_filename'] );
+			}
+		}
+
+		foreach ( $keys as $id ) {
 			// Ignore the separators.
 			if ( $this->is_separator( $id ) ) {
 				continue;
@@ -129,14 +142,52 @@ class Product {
 				continue;
 			}
 
-			$data[ $id ] = $meta[ $id ];
+			// Make key simpler. Trim out prefix.
+			$key = str_replace( '_product_', '', $id );
+
+			// Convert logo (icons) and cover (banner) to an array.
+			if ( 'logo' === $key || 'cover' === $key ) {
+				$data[ $key ] = Server::load()->manager->make_thing_array( $meta[ $id ] );
+
+				continue;
+			}
+
+			$data[ $key ] = $meta[ $id ];
 		}
 
-		return $data;
+		/**
+		 * WPHOOK: Filter -> change default updates meta.
+		 *
+		 * @param array $data The saved product meta data. Possible array keys are:
+		 * * `string`   `version`        - The latest product version.
+		 * * `string`   `wp_tested`      - The latest WordPress version product supports.
+		 * * `string`   `wp_requires`    - The minimum WordPress version product needs.
+		 * * `string`   `last_updated`   - The last update date for the product.
+		 * * `string[]` `logo`           - `1x` (128x128px) version as a single array item.
+		 *                                 File extensions for icons can be jpg, png or gif.
+		 *                                 Multiple versions can be in an array.
+		 *                                 Possible multiple array keys are:
+		 *                                 ** `svg` (just svg url to the image),
+		 *                                 ** `1x` (url to 128x128px size image),
+		 *                                 ** `2x` (url to 256x256px size image).
+		 * * `string[]` `cover`          - `1x` (772x250px) version as a single array item.
+		 *                                 File extensions for banners can be jpg, png.
+		 *                                 Multiple versions can be in an array.
+		 *                                 Possible array keys are:
+		 *                                 ** `1x` (url to 772x250px size image),
+		 *                                 ** `2x` (url to 1544x500px size image).
+		 * * `string`   `bucket`         - S3 bucket name where this product is saved.
+		 * * `string`   `filename`       - S3 filename inside bucket for this product (.zip).
+		 * @param int   $id   The current product ID.
+		 * @var   array
+		 */
+		$product_meta = apply_filters( 'hzfex_license_manager_pre_product_meta_dispatch', $data, $id );
+
+		return $product_meta;
 	}
 
 	/**
-	 * Creates product metbox fields.
+	 * Creates product metabox fields.
 	 *
 	 * @return array
 	 */
@@ -162,11 +213,11 @@ class Product {
 				'type'  => 'text',
 			),
 			'_product_logo'         => array(
-				'label' => __( 'Logo', 'tws-license-manager-server' ),
+				'label' => __( 'Logo (128x128px)', 'tws-license-manager-server' ),
 				'type'  => 'text',
 			),
 			'_product_cover'        => array(
-				'label' => __( 'Cover Photo', 'tws-license-manager-server' ),
+				'label' => __( 'Cover Photo (772x250 px)', 'tws-license-manager-server' ),
 				'type'  => 'text',
 			),
 			'_storage_separator'    => array(
