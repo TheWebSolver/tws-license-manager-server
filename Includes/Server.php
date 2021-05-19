@@ -259,9 +259,7 @@ final class Server {
 		$url = apply_filters( 'hzfex_license_manager_server_product_package_url', $package );
 
 		// Set the package URL as response.
-		if ( $url && is_string( $url ) ) {
-			$data['package'] = $url;
-		}
+		$data['package'] = $url;
 
 		return $data;
 	}
