@@ -78,7 +78,7 @@ final class Manager implements Options_Interface {
 			'order_validate_response'   => 'Order not found.',
 			'name_validate_response'    => 'Product not found.',
 		);
-		$options        = wp_parse_args( get_option( self::OPTION, array(), $this->defaults ) );
+		$options        = wp_parse_args( get_option( self::OPTION, array() ), $this->defaults );
 		$base           = '/lmfwc/v2/';
 		$endpoint       = 'licenses';
 
