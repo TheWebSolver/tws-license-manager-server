@@ -27,6 +27,7 @@ use LicenseManagerForWooCommerce\Models\Resources\License;
 use TheWebSolver\License_Manager\Server;
 use TheWebSolver\License_Manager\Options_Interface;
 use TheWebSolver\License_Manager\Single_Instance;
+use TheWebSolver\License_Manager\Options_Handler;
 use WP_Error;
 
 /**
@@ -35,7 +36,7 @@ use WP_Error;
  * Handles Amazon S3 SDK.
  */
 class S3 implements Options_Interface {
-	use Single_Instance;
+	use Single_Instance, Options_Handler;
 
 	/**
 	 * Options key.
@@ -45,41 +46,21 @@ class S3 implements Options_Interface {
 	const OPTION = 'tws_license_manager_s3_config';
 
 	/**
-	 * The options section priority.
-	 *
-	 * @var int
-	 */
-	private $option_priority = 10;
-
-	/**
-	 * Default options value.
-	 *
-	 * @var array
-	 */
-	private $defaults = array(
-		'use_amazon_s3'     => 'on',
-		's3_region'         => '',
-		's3_version'        => 'latest',
-		's3_key'            => '',
-		's3_secret'         => '',
-		's3_bucket'         => '',
-		's3_url_expiration' => '10',
-	);
-
-	/**
-	 * The options.
-	 *
-	 * @var string[]
-	 */
-	private $options;
-
-	/**
 	 * Sets up Amazon S3.
 	 *
 	 * @return S3
 	 */
 	public function instance() {
-		$this->options = wp_parse_args( get_option( self::OPTION, array() ), $this->defaults );
+		$this->defaults = array(
+			'use_amazon_s3'     => 'on',
+			's3_region'         => '',
+			's3_version'        => 'latest',
+			's3_key'            => '',
+			's3_secret'         => '',
+			's3_bucket'         => '',
+			's3_url_expiration' => '10',
+		);
+		$this->options  = wp_parse_args( get_option( self::OPTION, array() ), $this->defaults );
 
 		return $this;
 	}
@@ -182,25 +163,14 @@ class S3 implements Options_Interface {
 	}
 
 	/**
-	 * Sets options section priority to container.
-	 *
-	 * @param int $priority The `admin_init` hook priority.
-	 *
-	 * @inheritDoc
-	 */
-	public function set_section_priority( int $priority ) {
-		$this->option_priority = $priority;
-
-		return $this;
-	}
-
-	/**
 	 * Adds options section to container.
 	 *
+	 * @param int $priority admin_init hook priority.
+	 *
 	 * @inheritDoc
 	 */
-	public function add_page_section() {
-		add_action( 'admin_init', array( $this, 'add_section' ), $this->option_priority );
+	public function add_page_section( int $priority ) {
+		add_action( 'admin_init', array( $this, 'add_section' ), $priority );
 	}
 
 	/**
@@ -237,7 +207,7 @@ class S3 implements Options_Interface {
 				'class'             => 'hz_switcher_control',
 				'sanitize_callback' => 'sanitize_key',
 				'priority'          => 1,
-				'default'           => 'on',
+				'default'           => $this->defaults['use_amazon_s3'],
 			)
 		)
 		->add_field(
@@ -250,6 +220,7 @@ class S3 implements Options_Interface {
 				'sanitize_callback' => 'sanitize_text_field',
 				'class'             => 'widefat',
 				'priority'          => 5,
+				'placeholder'       => 'ap-south-1',
 			)
 		)
 		->add_field(
@@ -310,7 +281,7 @@ class S3 implements Options_Interface {
 			's3_url_expiration',
 			self::OPTION,
 			array(
-				'label'             => __( 'Amazon S3 Pre-signed URL Expiration Time', 'tws-license-manager-server' ),
+				'label'             => __( 'URL Expiration Time', 'tws-license-manager-server' ),
 				'desc'              => sprintf(
 					'%1$s <span class="option_notice alert">%2$s <a href="%3$s" target="_blank">%4$s</a></span>',
 					__( 'Enter the number of minutes after which the Pre-signed URL to the product package will expire. Expired links will no longer provide access to the package.', 'tws-license-manager-server' ),
@@ -329,14 +300,5 @@ class S3 implements Options_Interface {
 				'step'              => 1,
 			)
 		);
-	}
-
-	/**
-	 * Gets S3 Options.
-	 *
-	 * @inheritDoc
-	 */
-	public function get_option() {
-		return $this->options;
 	}
 }

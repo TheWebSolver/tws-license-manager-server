@@ -110,9 +110,9 @@ final class Server {
 	 * Adds options page sections and fields to the container.
 	 */
 	private function init_instances() {
-		$this->manager->instance()->set_section_priority( 10 )->add_page_section();
-		$this->s3->instance()->set_section_priority( 15 )->add_page_section();
-		$this->checkout->instance()->set_section_priority( 20 )->add_page_section();
+		$this->manager->instance()->add_page_section( 10 );
+		$this->s3->instance()->add_page_section( 15 );
+		$this->checkout->instance()->add_page_section( 20 );
 		$this->product->instance();
 		$this->order->instance();
 
@@ -235,7 +235,7 @@ final class Server {
 		$package = '';
 
 		// Make Amazon S3 request and get presigned URL.
-		if ( 'on' === $this->s3->get_option()['use_amazon_s3'] ) {
+		if ( 'on' === $this->s3->get_option( 'use_amazon_s3' ) ) {
 			$package = $this->s3->get_presigned_url_for( $license );
 
 			if ( is_wp_error( $package ) ) {

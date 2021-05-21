@@ -31,28 +31,20 @@ interface Options_Interface {
 	/**
 	 * Sets options section priority to container.
 	 *
-	 * This priority will be used with `admin_init` hook which in turns
+	 * The priority will be used with `admin_init` hook which in turns
 	 * becomes the priority for displaying sections in options page.
 	 *
 	 * Higher the priority, sections gets appended to the last.
 	 *
 	 * ___
-	 * ***It must be less than `99999`***.
+	 * ***Priority must be less than `99999`***.
 	 * ___
 	 *
 	 * @param int $priority The `admin_init` hook priority.
 	 *
 	 * @return $this
 	 */
-	public function set_section_priority( int $priority );
-
-	/**
-	 * Initializes the section creation.
-	 *
-	 * Internally, it will add `admin_init` action hook
-	 * with `add_section` as the callable method.
-	 */
-	public function add_page_section();
+	public function add_page_section( int $priority );
 
 	/**
 	 * Creates sections and fields to the container.
@@ -68,7 +60,9 @@ interface Options_Interface {
 	 *
 	 * Returns the section options as an array values.
 	 *
+	 * @param string $key The section's field key to get the field value directly.
+	 *
 	 * @return array
 	 */
-	public function get_option();
+	public function get_option( string $key = '' );
 }

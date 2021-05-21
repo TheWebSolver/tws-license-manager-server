@@ -23,6 +23,7 @@ use LicenseManagerForWooCommerce\Models\Resources\License;
 use TheWebSolver\License_Manager\Options_Interface;
 use TheWebSolver\License_Manager\Server;
 use TheWebSolver\License_Manager\Single_Instance;
+use TheWebSolver\License_Manager\Options_Handler;
 
 // Exit if accessed directly.
 defined( 'ABSPATH' ) || exit;
@@ -33,7 +34,7 @@ defined( 'ABSPATH' ) || exit;
  * Handles license server request validation and response modification.
  */
 final class Manager implements Options_Interface {
-	use Single_Instance;
+	use Single_Instance, Options_Handler;
 
 	/**
 	 * API Validation data.
@@ -57,20 +58,6 @@ final class Manager implements Options_Interface {
 	private $debug = false;
 
 	/**
-	 * The options section priority.
-	 *
-	 * @var int
-	 */
-	private $option_priority = 10;
-
-	/**
-	 * The options.
-	 *
-	 * @var array
-	 */
-	private $options;
-
-	/**
 	 * Options key.
 	 *
 	 * @var string
@@ -78,28 +65,22 @@ final class Manager implements Options_Interface {
 	const OPTION = 'tws_license_manager_server_basic_config';
 
 	/**
-	 * Default options value.
-	 *
-	 * @var string[]
-	 */
-	private $defaults = array(
-		'debug_mode'                => 'off',
-		'debug_endpoint'            => 'off',
-		'license_validate_response' => 'License not found.',
-		'email_validate_response'   => 'Email address not found.',
-		'order_validate_response'   => 'Order not found.',
-		'name_validate_response'    => 'Product not found.',
-	);
-
-	/**
 	 * Sets up server manager.
 	 *
 	 * @return Manager
 	 */
 	public function instance() {
-		$options  = wp_parse_args( (array) get_option( self::OPTION, array(), $this->defaults ) );
-		$base     = '/lmfwc/v2/';
-		$endpoint = 'licenses';
+		$this->defaults = array(
+			'debug_mode'                => 'off',
+			'debug_endpoint'            => 'off',
+			'license_validate_response' => 'License not found.',
+			'email_validate_response'   => 'Email address not found.',
+			'order_validate_response'   => 'Order not found.',
+			'name_validate_response'    => 'Product not found.',
+		);
+		$options        = wp_parse_args( get_option( self::OPTION, array(), $this->defaults ) );
+		$base           = '/lmfwc/v2/';
+		$endpoint       = 'licenses';
 
 		foreach ( $this->defaults as $key => $field ) {
 			// Set debug option and continue.
@@ -126,37 +107,6 @@ final class Manager implements Options_Interface {
 		$this->route   = $base . $endpoint;
 
 		return $this;
-	}
-
-	/**
-	 * Sets section priority.
-	 *
-	 * @param int $priority The `admin_init` hook priority.
-	 *
-	 * @inheritDoc
-	 */
-	public function set_section_priority( int $priority ) {
-		$this->option_priority = $priority;
-
-		return $this;
-	}
-
-	/**
-	 * Adds General options.
-	 *
-	 * @inheritDoc
-	 */
-	public function add_page_section() {
-		add_action( 'admin_init', array( $this, 'add_section' ), $this->option_priority );
-	}
-
-	/**
-	 * Gets saved options.
-	 *
-	 * @inheritDoc
-	 */
-	public function get_option() {
-		return $this->options;
 	}
 
 	/**

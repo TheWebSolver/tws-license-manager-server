@@ -22,6 +22,7 @@ namespace TheWebSolver\License_Manager\Component;
 use TheWebSolver\License_Manager\Options_Interface;
 use TheWebSolver\License_Manager\Server;
 use TheWebSolver\License_Manager\Single_Instance;
+use TheWebSolver\License_Manager\Options_Handler;
 
 // Exit if accessed directly.
 defined( 'ABSPATH' ) || exit;
@@ -32,7 +33,7 @@ defined( 'ABSPATH' ) || exit;
  * Handles WooCommerce checkout.
  */
 class Checkout implements Options_Interface {
-	use Single_Instance;
+	use Single_Instance, Options_Handler;
 
 	/**
 	 * Control get checkout behaviour.
@@ -63,20 +64,6 @@ class Checkout implements Options_Interface {
 	private $redirect = true;
 
 	/**
-	 * The options section priority.
-	 *
-	 * @var int
-	 */
-	private $option_priority = 10;
-
-	/**
-	 * The options.
-	 *
-	 * @var array
-	 */
-	private $options;
-
-	/**
 	 * The checkout license input field key.
 	 *
 	 * @var string
@@ -105,66 +92,28 @@ class Checkout implements Options_Interface {
 	const CLIENT_LICENSE = 'tws_license_manager_client_license';
 
 	/**
-	 * Default options value.
-	 *
-	 * @var array
-	 */
-	private $defaults = array(
-		'disable_guest'          => 'on',
-		'license_field'          => 'on',
-		'license_field_position' => 'checkout_billing',
-		'limit_item'             => 'on',
-		'redirect_add_to_cart'   => 'on',
-	);
-
-	/**
 	 * Sets up WooCommerce checkout.
 	 *
 	 * @return Checkout
 	 */
 	public function instance() {
-		$options                = wp_parse_args( (array) get_option( self::OPTION, array() ), $this->defaults );
-		$this->options          = $options;
-		$this->disable_guest    = isset( $options['disable_guest'] ) && 'on' === $options['disable_guest'] ? true : false;
-		$this->check_license    = isset( $options['license_field'] ) && 'on' === $options['license_field'] ? true : false;
-		$this->section_position = isset( $options['license_field_position'] ) && ! empty( $options['license_field_position'] ) ? $options['license_field_position'] : 'billing';
-		$this->limit_item       = isset( $options['limit_item'] ) && 'on' === $options['limit_item'] ? true : false;
-		$this->redirect         = isset( $options['redirect_add_to_cart'] ) && 'on' === $options['redirect_add_to_cart'] ? true : false;
+		$this->defaults      = array(
+			'disable_guest'          => 'on',
+			'license_field'          => 'on',
+			'license_field_position' => 'checkout_billing',
+			'limit_item'             => 'on',
+			'redirect_add_to_cart'   => 'on',
+		);
+		$options             = wp_parse_args( get_option( self::OPTION, array() ), $this->defaults );
+		$this->options       = $options;
+		$this->disable_guest = isset( $options['disable_guest'] ) && 'on' === $options['disable_guest'] ? true : false;
+		$this->check_license = isset( $options['license_field'] ) && 'on' === $options['license_field'] ? true : false;
+		$this->limit_item    = isset( $options['limit_item'] ) && 'on' === $options['limit_item'] ? true : false;
+		$this->redirect      = isset( $options['redirect_add_to_cart'] ) && 'on' === $options['redirect_add_to_cart'] ? true : false;
 
 		$this->init_hooks();
 
 		return $this;
-	}
-
-	/**
-	 * Sets section priority.
-	 *
-	 * @param int $priority The `admin_init` hook priority.
-	 *
-	 * @inheritDoc
-	 */
-	public function set_section_priority( int $priority ) {
-		$this->option_priority = $priority;
-
-		return $this;
-	}
-
-	/**
-	 * Adds Checkout options.
-	 *
-	 * @inheritDoc
-	 */
-	public function add_page_section() {
-		add_action( 'admin_init', array( $this, 'add_section' ), $this->option_priority );
-	}
-
-	/**
-	 * Gets saved options.
-	 *
-	 * @inheritDoc
-	 */
-	public function get_option() {
-		return $this->options;
 	}
 
 	/**
@@ -185,7 +134,7 @@ class Checkout implements Options_Interface {
 		add_action( 'woocommerce_before_checkout_process', array( $this, 'process' ), 10 );
 
 		if ( $this->check_license ) {
-			add_action( "woocommerce_{$this->section_position}", array( $this, 'add_license_field' ) );
+			add_action( "woocommerce_{$this->options['license_field_position']}", array( $this, 'add_license_field' ) );
 		}
 
 		if ( $this->limit_item ) {
