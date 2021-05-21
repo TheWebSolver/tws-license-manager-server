@@ -17,7 +17,7 @@
  * ╚═╝      ╚═╝    ═══════════════╝
  */
 
-namespace TheWebSolver\License_Manager\Components;
+namespace TheWebSolver\License_Manager\Component;
 
 use LicenseManagerForWooCommerce\Settings;
 use LicenseManagerForWooCommerce\Models\Resources\License;

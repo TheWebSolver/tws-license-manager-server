@@ -17,7 +17,7 @@
  * ╚═╝      ╚═╝    ═══════════════╝
  */
 
-namespace TheWebSolver\License_Manager\Components;
+namespace TheWebSolver\License_Manager\Component;
 
 use TheWebSolver\License_Manager\Server;
 use TheWebSolver\License_Manager\Single_Instance;

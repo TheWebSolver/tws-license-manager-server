@@ -23,9 +23,9 @@ use TheWebSolver\Core\Setting\Component\Container;
 use TheWebSolver\Core\Setting\Plugin;
 use TheWebSolver\License_Manager\API\Manager;
 use TheWebSolver\License_Manager\API\S3;
-use TheWebSolver\License_Manager\Components\Checkout;
-use TheWebSolver\License_Manager\Components\Order;
-use TheWebSolver\License_Manager\Components\Product;
+use TheWebSolver\License_Manager\Component\Checkout;
+use TheWebSolver\License_Manager\Component\Order;
+use TheWebSolver\License_Manager\Component\Product;
 use LicenseManagerForWooCommerce\Models\Resources\License;
 
 // Exit if accessed directly.
