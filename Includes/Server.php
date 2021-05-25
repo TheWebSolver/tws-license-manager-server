@@ -110,13 +110,11 @@ final class Server {
 	 * Adds options page sections and fields to the container.
 	 */
 	private function init_instances() {
-		$this->manager->instance()->add_page_section( 10 );
+		$this->manager->instance()->add_page_section( 10 )->process();
 		$this->s3->instance()->add_page_section( 15 );
 		$this->checkout->instance()->add_page_section( 20 );
 		$this->product->instance();
 		$this->order->instance();
-
-		$this->manager->process();
 	}
 
 	/**
@@ -141,7 +139,7 @@ final class Server {
 	 *
 	 * @return array The modified response data.
 	 */
-	public function dispatch_product_details( array $data ) {
+	public function dispatch_product_details( array $data ): array {
 		$id                   = isset( $data['productId'] ) ? $data['productId'] : 0;
 		$data['product_meta'] = $this->product->get_data( $id );
 
@@ -159,13 +157,12 @@ final class Server {
 	 *
 	 * @return array
 	 */
-	public function validate_license( array $data, string $key, array $metadata, array $parameters, $license ) {
+	public function validate_license( array $data, string $key, array $metadata, array $parameters, $license ): array {
 		// License can't be generated from request parameters, $data => error.
 		if ( ! $license ) {
 			return array(
 				'error' => __( 'License can not be verified.', 'tws-license-manager-server' ),
 				'code'  => 400,
-				'data'  => $data,
 			);
 		}
 
@@ -203,29 +200,26 @@ final class Server {
 		// This is the stage where it is assumed that validation is performed without any flag.
 		// Nothing happens on server side. License data and product meta are sent back as response.
 		if ( ! $is_update ) {
-			return array(
-				'code' => 200,
-				'data' => $data,
-				'meta' => $meta,
-			);
+			$data['code'] = 200;
+			$data['meta'] = $meta; // "meta" key instead of "product_meta" to prevent update trigger.
+
+			return $data;
 		}
 
 		// License is not active, $data => error.
 		if ( 'active' !== $metadata['status'] ) {
-			return array(
-				'error' => __( 'License is not active.', 'tws-license-manager-server' ),
-				'code'  => 402,
-				'data'  => $data,
-			);
+			$data['error'] = __( 'License is not active.', 'tws-license-manager-server' );
+			$data['code']  = 402;
+
+			return $data;
 		}
 
 		// License has expired, $data => error.
 		if ( 'expired' === $state ) {
-			return array(
-				'error' => __( 'License has expired.', 'tws-license-manager-server' ),
-				'code'  => 403,
-				'data'  => $data,
-			);
+			$data['error'] = __( 'License has expired.', 'tws-license-manager-server' );
+			$data['code']  = 403;
+
+			return $data;
 		}
 
 		// Send product info along with response.
@@ -239,11 +233,10 @@ final class Server {
 			$package = $this->s3->get_presigned_url_for( $license );
 
 			if ( is_wp_error( $package ) ) {
-				return array(
-					'error' => $package->get_error_message(),
-					'code'  => $package->get_error_data(),
-					'data'  => $data,
-				);
+				$data['error'] = $package->get_error_message();
+				$data['code']  = $package->get_error_data();
+
+				return $data;
 			}
 		}
 
