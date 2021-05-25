@@ -44,9 +44,13 @@ trait Options_Handler {
 	 * Adds Checkout options.
 	 *
 	 * @param int $priority admin_init hook priority.
+	 *
+	 * @return $this
 	 */
 	public function add_page_section( int $priority ) {
 		add_action( 'admin_init', array( $this, 'add_section' ), $priority );
+
+		return $this;
 	}
 
 	/**
