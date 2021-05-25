@@ -110,18 +110,18 @@ final class Order {
 
 		/** @var License $license The License object. */ // phpcs:ignore
 		foreach ( $licenses as $license ) {
-			// Get transient key (created from license key field at checkout).
+			// Get option key (created from license key field at checkout).
 			$key = sha1( $license->getDecryptedLicenseKey() );
 
-			// Get checkout transient data.
-			$transient_value = get_transient( $key );
-			$transient       = is_array( $transient_value ) ? (array) $transient_value : array();
+			// Get checkout option value.
+			$value  = get_option( $key );
+			$option = is_array( $value ) ? (array) $value : array();
 
-			// Get parent order ID from transient.
-			$parent_id = isset( $transient['order_id'] ) ? (int) $transient['order_id'] : 0;
+			// Get parent order ID from option.
+			$parent_id = isset( $option['order_id'] ) ? (int) $option['order_id'] : 0;
 
-			// Get license ID entered during checkout from transient.
-			$license_id = isset( $transient['license_id'] ) ? (int) $transient['license_id'] : 0;
+			// Get license ID entered during checkout from option.
+			$license_id = isset( $option['license_id'] ) ? (int) $option['license_id'] : 0;
 
 			// Perform tasks for license whose order ID and License key matches.
 			if ( ( $parent_id === (int) $order_id ) && ( $license->getId() === $license_id ) ) {
@@ -132,7 +132,7 @@ final class Order {
 					$id = $license->getProductId();
 
 					// Check if generator was used for issuing license.
-					$use = get_post_meta( $license->getProductId(), Product::USE_GENERATOR_META, true );
+					$use = 1 === absint( get_post_meta( $id, Product::USE_GENERATOR_META, true ) );
 
 					// Get the generator ID if product license was issued by generator.
 					$get = $use ? get_post_meta( $id, Product::ASSIGNED_GENERATOR_META, true ) : 0;
@@ -146,8 +146,8 @@ final class Order {
 						if ( $generator->getExpiresIn() ) {
 							$this->update_expiry_date( $license, $generator, true );
 
-							// Clear the checkout tranisent.
-							delete_transient( $key );
+							// Clear the checkout option.
+							delete_option( $key );
 
 							// Flag successful update of the license.
 							$complete = true;
