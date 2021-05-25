@@ -163,17 +163,6 @@ class S3 implements Options_Interface {
 	}
 
 	/**
-	 * Adds options section to container.
-	 *
-	 * @param int $priority admin_init hook priority.
-	 *
-	 * @inheritDoc
-	 */
-	public function add_page_section( int $priority ) {
-		add_action( 'admin_init', array( $this, 'add_section' ), $priority );
-	}
-
-	/**
 	 * Adds Amazon S3 page.
 	 *
 	 * @inheritDoc
