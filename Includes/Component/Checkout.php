@@ -122,11 +122,12 @@ class Checkout implements Options_Interface {
 	private function init_hooks() {
 		// Save the renewal license key for 10 minutes when link clicked after license expiry on client.
 		// phpcs:disable WordPress.Security.NonceVerification.Recommended
-		if ( isset( $_REQUEST['tws_license_key'] ) ) {
+		if ( isset( $_REQUEST['tws_license_key'] ) && 'on' === $this->get_option( 'license_field' ) ) {
 			setcookie( self::CLIENT_LICENSE, sanitize_text_field( wp_unslash( $_REQUEST['tws_license_key'] ) ), time() + ( MINUTE_IN_SECONDS * 10 ) );
 		}
 		// phpcs:enable
 
+		add_action( 'woocommerce_before_checkout_form_cart_notices', array( $this, 'add_notice' ) );
 		add_filter( 'woocommerce_get_script_data', array( $this, 'filter_script' ), 10, 2 );
 		add_action( 'woocommerce_before_checkout_form', array( $this, 'require_new_account' ), -1 );
 		add_action( 'woocommerce_checkout_fields', array( $this, 'manage_fields' ), 10 );
@@ -150,6 +151,72 @@ class Checkout implements Options_Interface {
 		}
 		add_action( 'woocommerce_after_checkout_validation', array( $this, 'validate' ), 10, 2 );
 		add_action( 'woocommerce_checkout_create_order', array( $this, 'save_order_meta' ), 10, 2 );
+	}
+
+	/**
+	 * Adds WooCommerce license key cookie notice for the expired license.
+	 *
+	 * This notice depends on the "Renew Now" button on client license form.
+	 * If that button is disabled on client side, this will never trigger.
+	 * License key cookie will be set for 10 minuties as soon as user lands
+	 * on server checkout page with the client product in cart.
+	 * It is required that cart must have only that product in current session.
+	 * Also, to make sure notice works in non-intrusive manner, cookie is deleted
+	 * once the cart content changes.
+	 *
+	 * If license key cookie hasn't expired and cart has only one product (the client product),
+	 * then a notice will be displayed depending on the user's logged in state.
+	 */
+	public function add_notice() {
+		// Delete license key cookie once cart contents change.
+		if ( ( WC()->cart instanceof \WC_Cart ) && 1 !== WC()->cart->get_cart_contents_count() ) {
+			setcookie( self::CLIENT_LICENSE, '', time() - 3600 );
+
+			return;
+		}
+
+		$license_key = isset( $_COOKIE[ self::CLIENT_LICENSE ] ) ? sanitize_text_field( wp_unslash( $_COOKIE[ self::CLIENT_LICENSE ] ) ) : '';
+
+		// Bail if license key not set or expired or user not on checkout page.
+		if ( ! $license_key && ! is_checkout() ) {
+			return;
+		}
+
+		$label = __( 'Existing License Key', 'tws-license-manager-server' );
+
+		if ( is_user_logged_in() ) {
+			$msg = sprintf(
+				/* Translators: %1$s - The license key from client saved in cookie, %2$s - label text. */
+				__( 'Your license key [%1$s] has been automatically added to %2$s field.', 'tws-license-manager-server' ),
+				"<b>{$license_key}</b>",
+				'<label for="license">' . $label . '</label>',
+			);
+			$type = 'success';
+		} else {
+			/* Translators: %s - The license key from client saved in cookie. */
+			$msg  = sprintf( __( 'Your license key [%s] is saved in cookie for 10 minutes. Please login with the same email to renew it instantly.', 'tws-license-manager-server' ), "<b>{$license_key}</b>" );
+			$type = 'error';
+		}
+
+		/**
+		 * WPHOOK: Filter -> Show or not the woocommerce notice for license key.
+		 *
+		 * @param bool $enable Enable notice or not.
+		 */
+		if ( apply_filters( 'hzfex_license_manager_server_show_license_wc_notice', true ) ) {
+			wc_add_notice( $msg, $type );
+		}
+		?>
+		<style type="text/css">
+			.woocommerce-message label[for="license"] {
+				border: 2px solid;
+				padding: 3px 8px;
+				border-radius: 5px;
+				font-weight: bold;
+				cursor: pointer;
+			}
+		</style>
+		<?php
 	}
 
 	/**
@@ -236,8 +303,8 @@ class Checkout implements Options_Interface {
 				&& $product
 				&& $product === $license->getProductId()
 			) {
-				// Set transient for making relation between new and old order.
-				set_transient(
+				// Set option for making relation between new and old order.
+				update_option(
 					sha1( $license_key ),
 					array(
 						'order_id'   => $license->getOrderId(),
@@ -282,8 +349,8 @@ class Checkout implements Options_Interface {
 		$license_key = sanitize_text_field( wp_unslash( $_POST[ self::META_KEY ] ) );
 		// phpcs:enable WordPress.Security.NonceVerification.Missing
 
-		$transient = get_transient( sha1( $license_key ) );
-		$parent_id = isset( $transient['order_id'] ) ? (int) $transient['order_id'] : 0;
+		$option    = get_option( sha1( $license_key ), array() );
+		$parent_id = isset( $option['order_id'] ) ? (int) $option['order_id'] : 0;
 
 		if ( $parent_id ) {
 			$parent_order = wc_get_order( $parent_id );
@@ -398,12 +465,12 @@ class Checkout implements Options_Interface {
 	 * @param \WC_Checkout $checkout The current checkout instance.
 	 */
 	public function restore_account( $checkout ) {
-		if ( ! $this->disable_guest ) {
-			// Don't disable guest checkout.
-			$checkout->enable_guest_checkout = true;
+		if ( ! $this->disable_guest && ! is_user_logged_in() ) {
+			if ( ! $checkout->is_registration_required() ) {
+				// Don't disable guest checkout.
+				$checkout->enable_guest_checkout = true;
 
-			// Don't force creating account.
-			if ( ! is_user_logged_in() ) {
+				// Don't force creating account.
 				$checkout->must_create_account = false;
 			}
 		}
