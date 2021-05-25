@@ -258,9 +258,17 @@ final class Manager implements Options_Interface {
 			);
 		}
 
-		// If expired license hasn't been renewed, client will never ever trigger this event.
-		// License expired error message has already been sent by lmfwc.
-		// If client has reached here, then license is renewed but license meta is still expired.
+		/**
+		 * This event occurs only after cron or WordPress update system has already
+		 * been triggered once on client and then license activation form is used.
+		 *
+		 * After cron or update system triggered, the client will have the
+		 * matching license status as with the server. Then, when a user
+		 * attempt to activate the license, this event will be triggered.
+		 *
+		 * In a nutshell, activate form won't trigger this event unless
+		 * license metadata is expired and client status is also expired.
+		 */
 		if ( 'yes' === $has_expired ) {
 			// License still expired, stop processing further.
 			if ( is_wp_error( $this->is_license_valid( $license ) ) ) {
@@ -288,7 +296,7 @@ final class Manager implements Options_Interface {
 
 			// Lets stop there. Can't deactivate just renewed license.
 			if ( 'deactivate' === $parameters['form_state'] ) {
-				return $this->request_error( __( 'Please activate your license first after expiration.', 'tws-license-manager-server' ), 400 );
+				return $this->request_error( __( 'Please activate your license first after renewal.', 'tws-license-manager-server' ), 400 );
 			}
 
 			// Create newly renewed license metadata.
@@ -308,7 +316,7 @@ final class Manager implements Options_Interface {
 				// Hack saved status so new activation is possible after renewal.
 				$saved_status = 'inactive';
 
-				// Decrease total count by 1 so new activation doesn't count for total activation.
+				// Decrease active count by 1 so new activation doesn't count for total activation.
 				lmfwc_update_license(
 					$license->getDecryptedLicenseKey(),
 					array( 'times_activated' => intval( $license->getTimesActivated() ) - 1 )
@@ -552,7 +560,7 @@ final class Manager implements Options_Interface {
 		$uri = (string) $_SERVER['REQUEST_URI'];
 
 		// Trim everything before the license key.
-		$from_key = ltrim( $uri, '/wp-json/lmfwc/v2/licenses/validate/' );
+		$from_key = str_replace( '/wp-json/lmfwc/v2/licenses/validate/', '', $uri );
 
 		// Trim the URI after license key (where query starts).
 		$key      = substr( $from_key, 0, strpos( $from_key, '?' ) );
