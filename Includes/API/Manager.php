@@ -115,21 +115,34 @@ final class Manager implements Options_Interface {
 	public function process() {
 		$this->validate();
 		$this->update();
+		$this->expired();
 	}
 
 	/**
 	 * Validates API on server.
 	 */
-	public function validate() {
+	private function validate() {
 		add_filter( 'lmfwc_rest_api_validation', array( $this, 'validate_request' ), 10, 3 );
 	}
 
 	/**
 	 * Updates license status and metadata.
 	 */
-	public function update() {
+	private function update() {
 		// Modify response and perform additional tasks.
 		add_filter( 'lmfwc_rest_api_pre_response', array( $this, 'parse_response' ), 10, 3 );
+	}
+
+	/**
+	 * Handles license expiration response.
+	 *
+	 * @todo Add hook to `LicenseManagerForWooCommerce\API\v2\Licenses::hasLicenseExpired`.
+	 *       Hook tag: `lmfwc_rest_license_pre_send_expired_response` with `$license` as arg.
+	 *       Add it before both return statements (catch Exception & expired license).
+	 * @filesource license-manager-for-woocommerce\includes\api\v2\Licenses.php line `886`.
+	 */
+	private function expired() {
+		add_action( 'lmfwc_rest_license_pre_send_expired_response', array( $this, 'license_expired' ) );
 	}
 
 	/**
@@ -569,11 +582,9 @@ final class Manager implements Options_Interface {
 
 		// Add error messages to response data if license has expired and update the the meta.
 		if ( $license ) {
-			$headers    = getallheaders();
-			$client_url = isset( $headers['Referer'] ) ? (string) $headers['Referer'] : '';
-			$meta_key   = 'data-' . self::parse_url( $client_url );
-			$get_meta   = lmfwc_get_license_meta( $license->getId(), $meta_key, true );
-			$metadata   = is_array( $get_meta ) ? (array) $get_meta : $metadata;
+			$meta     = $this->get_metadata( $license, true );
+			$meta_key = $meta['key'];
+			$metadata = $meta['value'];
 
 			// Send state also.
 			$data['state'] = isset( $metadata['status'] ) ? $metadata['status'] : '';
@@ -636,6 +647,54 @@ final class Manager implements Options_Interface {
 		$response = apply_filters( 'hzfex_license_manager_server_pre_send_response', $data, $license, $metadata );
 
 		return $response;
+	}
+
+	/**
+	 * Gets metadata from the client request headers.
+	 *
+	 * Only works during client request with `Referer` in request header.
+	 *
+	 * @param License $license The current license instance.
+	 * @param bool    $key     Whether to return meta key also.
+	 *
+	 * @return array Array of license meta value.
+	 *               If key is true, `array( 'key' => $meta_key, 'value' => $metadata )`.
+	 */
+	private function get_metadata( License $license, bool $key = false ) {
+		$headers  = getallheaders();
+		$client   = isset( $headers['Referer'] ) ? (string) $headers['Referer'] : '';
+		$meta_key = 'data-' . self::parse_url( $client );
+		$get_meta = lmfwc_get_license_meta( $license->getId(), $meta_key, true );
+		$metadata = is_array( $get_meta ) ? $get_meta : array();
+
+		$return = $metadata;
+
+		if ( $key ) {
+			$return = array(
+				'key'   => $meta_key,
+				'value' => $metadata,
+			);
+		}
+
+		return $return;
+	}
+
+	/**
+	 * Executes tasks when license expired.
+	 *
+	 * @param License $license The current license instance.
+	 */
+	public function license_expired( License $license ) {
+		$metadata = $this->get_metadata( $license, true );
+
+		$meta_key   = $metadata['key'];
+		$meta_value = $metadata['value'];
+
+		if ( ! isset( $meta_value['expired'] ) || 'yes' !== $meta_value['expired'] ) {
+			$meta_value['expired'] = 'yes';
+
+			$this->update_meta( $license->getId(), $meta_key, $meta_value );
+		}
 	}
 
 	/**
