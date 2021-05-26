@@ -140,8 +140,12 @@ final class Server {
 	 * @return array The modified response data.
 	 */
 	public function dispatch_product_details( array $data ): array {
-		$id                   = isset( $data['productId'] ) ? $data['productId'] : 0;
-		$data['product_meta'] = $this->product->get_data( $id );
+		$product_id   = isset( $data['productId'] ) ? $data['productId'] : 0;
+		$product_data = $this->product->get_data( $product_id );
+
+		if ( ! empty( $product_data ) ) {
+			$data['product_meta'] = $product_data;
+		}
 
 		return $data;
 	}
