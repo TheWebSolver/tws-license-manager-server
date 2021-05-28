@@ -102,7 +102,6 @@ final class Server {
 
 		add_action( 'after_setup_theme', array( $this, 'add_admin_page' ) );
 
-		add_filter( 'hzfex_license_manager_server_pre_response_dispatch', array( $this, 'dispatch_product_details' ) );
 		add_filter( 'hzfex_license_manager_server_pre_response_validate', array( $this, 'validate_license' ), 10, 5 );
 	}
 
@@ -135,19 +134,22 @@ final class Server {
 	/**
 	 * Sends product meta details along with response.
 	 *
-	 * @param array $data The response data.
+	 * @param array   $data     The response data.
+	 * @param License $license  The current license instance.
+	 * @param string  $key      The license meta key.
+	 * @param array   $metadata The license meta data.
 	 *
 	 * @return array The modified response data.
 	 */
-	public function dispatch_product_details( array $data ): array {
+	public function product_details( array $data, License $license, string $key, array $metadata ): array {
 		$product_id   = isset( $data['productId'] ) ? $data['productId'] : 0;
 		$product_data = $this->product->get_data( $product_id );
 
-		if ( ! empty( $product_data ) ) {
-			$data['product_meta'] = $product_data;
+		if ( 'active' === $data['state'] ) {
+			$product_data['package'] = $this->get_package_for( $license );
 		}
 
-		return $data;
+		return $this->manager->send_response( $license, $key, $metadata, $product_data, $data['state'] );
 	}
 
 	/**
@@ -197,18 +199,20 @@ final class Server {
 
 		// Request is a scheduled (cron job) event, $data => valid.
 		if ( $is_schedule ) {
-			return $this->manager->send_scheduled_response( $license, $key, $metadata, $meta, $state );
+			return $this->manager->send_response( $license, $key, $metadata, $meta, $state );
 		}
 
-		// Request is not made for product updates, stop further processing and send data & meta.
+		// Request is not made for product updates, stop further processing.
 		// This is the stage where it is assumed that validation is performed without any flag.
 		// Nothing happens on server side. License data and product meta are sent back as response.
 		if ( ! $is_update ) {
 			$data['code'] = 200;
-			$data['meta'] = $meta; // "meta" key instead of "product_meta" to prevent update trigger.
 
 			return $data;
 		}
+
+		// Send product info along with response.
+		$data['product_meta'] = $meta;
 
 		// License is not active, $data => error.
 		if ( 'active' !== $metadata['status'] ) {
@@ -226,21 +230,28 @@ final class Server {
 			return $data;
 		}
 
-		// Send product info along with response.
-		$data['product_meta'] = $meta;
+		// Set the package URL as response.
+		$data['product_meta']['package'] = $this->get_package_for( $license );
 
+		return $data;
+	}
+
+	/**
+	 * Gets Amazon S3 package.
+	 *
+	 * @param License $license The current license.
+	 *
+	 * @return string
+	 */
+	private function get_package_for( $license ) {
 		// Initialize download package URL.
 		$package = '';
 
-		// Make Amazon S3 request and get presigned URL.
 		if ( 'on' === $this->s3->get_option( 'use_amazon_s3' ) ) {
-			$package = $this->s3->get_presigned_url_for( $license );
+			$from_s3 = $this->s3->get_presigned_url_for( $license );
 
-			if ( is_wp_error( $package ) ) {
-				$data['error'] = $package->get_error_message();
-				$data['code']  = $package->get_error_data();
-
-				return $data;
+			if ( ! is_wp_error( $from_s3 ) && is_string( $from_s3 ) ) {
+				$package = $from_s3;
 			}
 		}
 
@@ -255,9 +266,6 @@ final class Server {
 		 */
 		$url = apply_filters( 'hzfex_license_manager_server_product_package_url', $package );
 
-		// Set the package URL as response.
-		$data['package'] = $url;
-
-		return $data;
+		return $url;
 	}
 }

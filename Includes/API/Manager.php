@@ -495,7 +495,7 @@ final class Manager implements Options_Interface {
 
 		// No activate/deactivate happening from the client license form, stop further processing.
 		if ( $endpoint !== $route ) {
-			$data['error'] = __( 'Server hacked. Contact plugin support.', 'tws-license-manager-server' );
+			$data['error'] = __( 'Something went wrong. Please contact plugin support.', 'tws-license-manager-server' );
 
 			return $data;
 		}
@@ -507,57 +507,48 @@ final class Manager implements Options_Interface {
 		$license     = lmfwc_get_license( $license_key );
 		$transient   = sha1( $license->getDecryptedLicenseKey() );
 		$metadata    = get_transient( $transient );
-		$meta_key    = is_array( $metadata ) && isset( $metadata['key'] ) ? (string) $metadata['key'] : '';
-
-		// Clear meta key from metadata.
-		unset( $metadata['key'] );
-
-		// Get email from transient metadata.
-		$saved_email = isset( $metadata['email'] ) ? $metadata['email'] : '';
-
-		// Check if key is present.
-		if ( $meta_key ) {
-			// Set active status as meta value.
-			$metadata['status'] = $status_text;
-
-			// Send meta key as response data.
-			$data['key'] = $meta_key;
-
-			/**
-			 * WPHOOK: Filter -> License meta value.
-			 *
-			 * @param array   $license_meta Meta value to save to database.
-			 * @param License $license      Current license object.
-			 * @param string  $form_state   Current client form state. Can be `activate` or `deactivate`.
-			 * @var   array
-			 */
-			$license_meta = apply_filters(
-				'hzfex_license_manager_server_response_license_meta',
-				$metadata,
-				$license,
-				$form_state,
-			);
-
-			$this->update_meta( $license->getId(), $meta_key, $license_meta );
-
-			// Clear transient.
-			delete_transient( $transient );
-		}
-
-		// Send email address as response data, if set.
-		if ( $saved_email ) {
-			$data['email'] = $saved_email;
-		}
+		$metadata    = is_array( $metadata ) ? $metadata : array();
+		$meta_key    = '';
 
 		// Send license status text as response data with state key.
 		$data['state'] = $status_text;
 
+		// Clear meta key from metadata.
+		if ( isset( $metadata['key'] ) ) {
+			$meta_key = (string) $metadata['key'];
+			unset( $metadata['key'] );
+		}
+
+		// Send meta key as response data.
+		$data['key'] = $meta_key;
+
+		// Set active status as meta value.
+		$metadata['status'] = $status_text;
+
 		/**
-		 * WPHOOK: Filter -> Response data before sending back.
+		 * WPHOOK: Filter -> License meta value.
 		 *
-		 * @param array $data The response data.
+		 * @param array   $license_meta Meta value to save to database.
+		 * @param License $license      Current license object.
+		 * @param string  $form_state   Current client form state. Can be `activate` or `deactivate`.
+		 * @var   array
 		 */
-		return apply_filters( 'hzfex_license_manager_server_pre_response_dispatch', $data );
+		$license_meta = apply_filters(
+			'hzfex_license_manager_server_response_license_meta',
+			$metadata,
+			$license,
+			$form_state,
+		);
+
+		// Check if key is present.
+		if ( $meta_key ) {
+			$this->update_meta( $license->getId(), $meta_key, $license_meta );
+		}
+
+		// Clear transient.
+		delete_transient( $transient );
+
+		return Server::load()->product_details( $data, $license, $meta_key, $license_meta );
 	}
 
 	/**
@@ -609,7 +600,7 @@ final class Manager implements Options_Interface {
 	}
 
 	/**
-	 * Sends scheduled/cron event resposne.
+	 * Sends resposne.
 	 *
 	 * @param License $license      The license object.
 	 * @param string  $key          The license meta key.
@@ -619,17 +610,18 @@ final class Manager implements Options_Interface {
 	 *
 	 * @return array
 	 */
-	public function send_scheduled_response( License $license, string $key, array $metadata, array $product_meta, string $state ): array {
+	public function send_response( License $license, string $key, array $metadata, array $product_meta, string $state ): array {
 		$data = array(
-			'key'               => $key,
-			'state'             => $state,
-			'orderId'           => $license->getOrderId(),
-			'createdAt'         => $license->getCreatedAt(),
-			'expiresAt'         => $license->getExpiresAt(),
-			'licenseKey'        => $license->getDecryptedLicenseKey(),
-			'timesActivated'    => $license->getTimesActivated(),
-			'timesActivatedMax' => $license->getTimesActivatedMax(),
-			'product_meta'      => $product_meta,
+			'key'          => $key,
+			'status'       => $state,
+			'order_id'     => $license->getOrderId(),
+			'expires_at'   => $license->getExpiresAt(),
+			'product_id'   => $license->getProductId(),
+			'active_count' => $license->getTimesActivated(),
+			'total_count'  => $license->getTimesActivatedMax(),
+			'license_key'  => $license->getDecryptedLicenseKey(),
+			'purchased_on' => $license->getCreatedAt(),
+			'product_meta' => $product_meta,
 		);
 
 		if ( isset( $metadata['email'] ) ) {
