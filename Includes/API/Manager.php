@@ -65,6 +65,13 @@ final class Manager implements Options_Interface {
 	const OPTION = 'tws_license_manager_server_basic_config';
 
 	/**
+	 * Product Secret Key.
+	 *
+	 * @var string
+	 */
+	private $hash = '';
+
+	/**
 	 * Sets up server manager.
 	 *
 	 * @return Manager
@@ -81,6 +88,10 @@ final class Manager implements Options_Interface {
 		$options        = wp_parse_args( get_option( self::OPTION, array() ), $this->defaults );
 		$base           = '/lmfwc/v2/';
 		$endpoint       = 'licenses';
+
+		if ( ! is_wp_error( $hash = Server::load()->secret_key() ) ) { // phpcs:ignore
+			$this->hash = $hash;
+		}
 
 		foreach ( $this->defaults as $key => $field ) {
 			// Set debug option and continue.
@@ -163,7 +174,8 @@ final class Manager implements Options_Interface {
 		$valid_form = array_key_exists( 'form_state', $parameters );
 
 		// Get request headers for validation.
-		$authorize  = $request->get_header_as_array( 'authorization' )[0];
+		$authorize  = $request->get_header_as_array( 'authorization' );
+		$authorize  = is_array( $authorize ) ? (string) $authorize[0] : 'Basic  None';
 		$from       = $request->get_header_as_array( 'from' );
 		$user_email = is_array( $from ) ? (string) $from[0] : '';
 		$client     = $request->get_header_as_array( 'referer' );
@@ -223,7 +235,7 @@ final class Manager implements Options_Interface {
 			if (
 				( 'validate' !== $parameters['form_state'] ) &&
 				// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode
-				( 'TWS' !== $auth_type || 'validate_license' !== base64_decode( $auth_val ) )
+				( 'TWS' !== $auth_type || base64_decode( $auth_val ) !== $this->hash )
 			) {
 				return $this->request_error( __( 'Request was made outside of license form.', 'tws-license-manager-server' ), 401 );
 			}
@@ -262,7 +274,7 @@ final class Manager implements Options_Interface {
 		if (
 			( 'validate' === $parameters['form_state'] ) &&
 			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode
-			( 'TWS' !== $auth_type || "{$meta_key}:{$purchased_on}" !== base64_decode( $auth_val ) )
+			( 'TWS' !== $auth_type || "{$meta_key}/{$purchased_on}:{$this->hash}" !== base64_decode( $auth_val ) )
 		) {
 			return $this->request_error(
 				__( 'You are not authorized for making license validation.', 'tws-license-manager-server' ),
@@ -296,7 +308,7 @@ final class Manager implements Options_Interface {
 
 				// Expired license can't be activated.
 				return $this->request_error(
-					__( 'Renew your license before attempting to activate again.', 'tws-license-manager-server' ),
+					__( 'Your license has expired. Renew your license first.', 'tws-license-manager-server' ),
 					400
 				);
 			}
