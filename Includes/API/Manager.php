@@ -284,12 +284,20 @@ final class Manager implements Options_Interface {
 		}
 
 		/**
-		 * This event occurs only after cron or WordPress update system has already
-		 * been triggered once on client and then license activation form is used.
+		 * This event occurs if license has expired on server already and client makes another request.
 		 *
-		 * After cron or update system triggered, the client will have the
-		 * matching license status as with the server. Then, when a user
-		 * attempt to activate the license, this event will be triggered.
+		 * This event can be triggered on three possible cases once license expired meta
+		 * is saved on server as well as on client.
+		 * License meta is added at the time just before sending the response back to client.
+		 *
+		 * - FIRST CASE: Activate/deactivate request sent from license form.
+		 *   Before sending expired error response, expired => yes value is added to license meta.
+		 *
+		 * - SECOND CASE: cron event has routine check set on client.
+		 *   Once license expires on server, expired => yes value is added to license meta.
+		 *
+		 * - THIRD CASE: WordPress updates triggers on the client.
+		 *   If license expired on server, expired => yes value is added to license meta.
 		 *
 		 * In a nutshell, activate form won't trigger this event unless
 		 * license metadata is expired and client status is also expired.
@@ -560,7 +568,28 @@ final class Manager implements Options_Interface {
 		// Clear transient.
 		delete_transient( $transient );
 
-		return Server::load()->product_details( $data, $license, $meta_key, $license_meta );
+		return $this->send_product_details_with_data( $data, $license, $meta_key, $license_meta );
+	}
+
+	/**
+	 * Sends product meta details along with response.
+	 *
+	 * @param array   $data     The response data.
+	 * @param License $license  The current license instance.
+	 * @param string  $key      The license meta key.
+	 * @param array   $metadata The license meta data.
+	 *
+	 * @return array The modified response data.
+	 */
+	private function send_product_details_with_data( array $data, License $license, string $key, array $metadata ): array {
+		$product_id   = isset( $data['productId'] ) ? $data['productId'] : 0;
+		$product_data = $this->product->get_data( $product_id );
+
+		if ( 'active' === $data['state'] ) {
+			$product_data['package'] = $this->get_package_for( $license );
+		}
+
+		return $this->send_response( $license, $key, $metadata, $product_data, $data['state'] );
 	}
 
 	/**
@@ -593,22 +622,96 @@ final class Manager implements Options_Interface {
 			$data['state'] = isset( $metadata['status'] ) ? $metadata['status'] : '';
 
 			if ( is_wp_error( $this->is_license_valid( $license ) ) ) {
-				$data['state']      = 'expired';
-				$data['expired_on'] = $license->getExpiresAt();
+				$data['state']     = 'expired';
+				$data['expiresAt'] = $license->getExpiresAt();
 			}
 		}
 
-		/**
-		 * WPHOOK: Filter -> Response data before sending back.
-		 *
-		 * Validation endpoint should be handled differently.
-		 *
-		 * @param array  $data      The response data.
-		 * @param string $meta_key  The meta key to save license metadata.
-		 * @param array  $metadata  The existing metadata.
-		 * @param array $parameters The request query parameters.
-		 */
-		return apply_filters( 'hzfex_license_manager_server_pre_response_validate', $data, $meta_key, $metadata, $parameters, $license );
+		return $this->validate_license( $data, $meta_key, $metadata, $parameters, $license );
+	}
+
+	/**
+	 * Validates response data before sending back.
+	 *
+	 * @param array        $data       The response data.
+	 * @param string       $key        The license meta key.
+	 * @param array        $metadata   The saved metadata.
+	 * @param array        $parameters The request query parameters.
+	 * @param bool|License $license    The license.
+	 *
+	 * @return array
+	 */
+	private function validate_license( array $data, string $key, array $metadata, array $parameters, $license ): array {
+		// License can't be generated from request parameters, $data => error.
+		if ( ! $license ) {
+			return array(
+				'error' => __( 'License can not be verified.', 'tws-license-manager-server' ),
+				'code'  => 400,
+			);
+		}
+
+		// No license status meta saved, $data => error.
+		if ( ! isset( $metadata['status'] ) ) {
+			return array(
+				'error' => __( 'License status can not be verified.', 'tws-license-manager-server' ),
+				'code'  => 401,
+			);
+		}
+
+		// The license state.
+		$state = (string) $data['state'];
+
+		// Make license expire when the time comes.
+		if (
+			'expired' === $state &&
+			( ! isset( $metadata['expired'] ) || 'yes' !== $metadata['expired'] )
+		) {
+			$metadata['expired'] = 'yes';
+			$this->update_meta( $license->getId(), $key, $metadata );
+		}
+
+		$flag        = isset( $parameters['flag'] ) ? (string) $parameters['flag'] : '';
+		$is_schedule = $flag && 'cron' === $flag;
+		$is_update   = $flag && ( 'update_themes' === $flag || 'update_plugins' === $flag );
+		$meta        = Server::load()->product->get_data( $license->getProductId() );
+
+		// Request is a scheduled (cron job) event, $data => valid.
+		if ( $is_schedule ) {
+			return $this->send_response( $license, $key, $metadata, $meta, $state );
+		}
+
+		// Request is not made for product updates, stop further processing.
+		// This is the stage where it is assumed that validation is performed without any flag.
+		// Nothing happens on server side. License data and product meta are sent back as response.
+		if ( ! $is_update ) {
+			$data['code'] = 200;
+
+			return $data;
+		}
+
+		// Send product info along with response.
+		$data['product_meta'] = $meta;
+
+		// License is not active, $data => error.
+		if ( 'active' !== $metadata['status'] ) {
+			$data['error'] = __( 'License is not active.', 'tws-license-manager-server' );
+			$data['code']  = 402;
+
+			return $data;
+		}
+
+		// License has expired, $data => error.
+		if ( 'expired' === $state ) {
+			$data['error'] = __( 'License has expired.', 'tws-license-manager-server' );
+			$data['code']  = 403;
+
+			return $data;
+		}
+
+		// Set the package URL as response.
+		$data['product_meta']['package'] = $this->get_package_for( $license );
+
+		return $data;
 	}
 
 	/**
@@ -807,6 +910,39 @@ final class Manager implements Options_Interface {
 		}
 
 		return $to_array;
+	}
+
+	/**
+	 * Gets Amazon S3 package.
+	 *
+	 * @param License $license The current license.
+	 *
+	 * @return string
+	 */
+	private function get_package_for( $license ) {
+		// Initialize download package URL.
+		$package = '';
+
+		if ( 'on' === Server::load()->s3->get_option( 'use_amazon_s3' ) ) {
+			$from_s3 = Server::load()->s3->get_presigned_url_for( $license );
+
+			if ( ! is_wp_error( $from_s3 ) && is_string( $from_s3 ) ) {
+				$package = $from_s3;
+			}
+		}
+
+		/**
+		 * WPHOOK: Filter -> package URL to send as response data.
+		 *
+		 * Use this hook to hijack and modify package URL before sending as response.
+		 * Best used in case where Amazon S3 is not used for storing the product zip file.
+		 *
+		 * @param string $package The package URL.
+		 * @var   string
+		 */
+		$url = apply_filters( 'hzfex_license_manager_server_product_package_url', $package );
+
+		return $url;
 	}
 
 	/**
