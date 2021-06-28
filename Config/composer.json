@@ -1,0 +1,16 @@
+{
+  "name": "thewebsolver/server",
+  "description": "The Web Solver License Manager Server",
+  "license": "GPL-3.0-or-later",
+  "minimum-stability": "dev",
+  "prefer-stable": true,
+  "authors": [
+    {
+      "name": "hsehszroc",
+      "email": "shesh@thewebsolver.com"
+    }
+  ],
+  "require": {
+    "thewebsolver/tws-license-manager-server": "dev-master"
+  }
+}
