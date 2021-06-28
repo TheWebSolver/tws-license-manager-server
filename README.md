@@ -9,7 +9,7 @@ This plugin is to be installed on WordPress Server where ***License Manager for 
 
 ### Generate required files
 - Create a folder (name it as you like, *for eg. **server***) inside WordPress plugin's folder.
-- Copy files located inside [Config](https://github.com/TheWebSolver/tws-license-manager-server/Config) folder into the folder you created above.
+- Copy files located inside [Config](https://github.com/TheWebSolver/tws-license-manager-server/tree/master/Config) folder into the folder you created above.
 - Then from terminal, navigate to the above folder and run:
 
 	```sh
