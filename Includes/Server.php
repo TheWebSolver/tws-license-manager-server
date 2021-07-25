@@ -26,7 +26,6 @@ use TheWebSolver\License_Manager\API\S3;
 use TheWebSolver\License_Manager\Component\Checkout;
 use TheWebSolver\License_Manager\Component\Order;
 use TheWebSolver\License_Manager\Component\Product;
-use LicenseManagerForWooCommerce\Models\Resources\License;
 
 // Exit if accessed directly.
 defined( 'ABSPATH' ) || exit;
@@ -52,7 +51,7 @@ final class Server {
 	public $s3;
 
 	/**
-	 * TheWebSolver\License_Manager\Components\Product instance.
+	 * TheWebSolver\License_Manager\Component\Product instance.
 	 *
 	 * @var Product
 	 */
@@ -73,14 +72,14 @@ final class Server {
 	public $container;
 
 	/**
-	 * TheWebSolver\License_Manager\Components\Checkout instance.
+	 * TheWebSolver\License_Manager\Component\Checkout instance.
 	 *
 	 * @var Checkout
 	 */
 	public $checkout;
 
 	/**
-	 * TheWebSolver\License_Manager\Components\Order instance.
+	 * TheWebSolver\License_Manager\Component\Order instance.
 	 *
 	 * @var Order
 	 */

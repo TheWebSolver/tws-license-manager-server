@@ -50,8 +50,7 @@ interface Options_Interface {
 	 * Creates sections and fields to the container.
 	 *
 	 * This must be a callable method for `admin_init` hook
-	 * initialized by the method `add_page_section`, and
-	 * with the priority set by `set_section_priority`.
+	 * initialized by the method `add_page_section`.
 	 */
 	public function add_section();
 
