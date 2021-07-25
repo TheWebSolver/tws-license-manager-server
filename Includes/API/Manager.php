@@ -583,7 +583,7 @@ final class Manager implements Options_Interface {
 	 */
 	private function send_product_details_with_data( array $data, License $license, string $key, array $metadata ): array {
 		$product_id   = isset( $data['productId'] ) ? $data['productId'] : 0;
-		$product_data = $this->product->get_data( $product_id );
+		$product_data = Server::load()->product->get_data( $product_id );
 
 		if ( 'active' === $data['state'] ) {
 			$product_data['package'] = $this->get_package_for( $license );
