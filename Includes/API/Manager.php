@@ -171,11 +171,10 @@ final class Manager implements Options_Interface {
 	public function validate_request( $result, $server, $request ) {
 		$route      = $this->route;
 		$parameters = $request->get_params();
-		$valid_form = array_key_exists( 'form_state', $parameters );
 
 		// Get request headers for validation.
 		$authorize  = $request->get_header_as_array( 'authorization' );
-		$authorize  = is_array( $authorize ) ? (string) $authorize[0] : 'Basic  None';
+		$authorize  = is_array( $authorize ) ? (string) $authorize[0] : 'Basic None';
 		$from       = $request->get_header_as_array( 'from' );
 		$user_email = is_array( $from ) ? (string) $from[0] : '';
 		$client     = $request->get_header_as_array( 'referer' );
@@ -200,6 +199,8 @@ final class Manager implements Options_Interface {
 		// phpcs:enable
 
 		/**
+		 * Debug mode on server can allow any valid API endpoint request.
+		 *
 		 * When debug mode if off:
 		 * - License shouldn't already have been activated/deactivated for same site.
 		 * - Route must be for license activation/deactivation/validation.
@@ -210,35 +211,26 @@ final class Manager implements Options_Interface {
 		 * -- /lmfwc/v2/licenses/deactivate/
 		 * -- /lmfwc/v2/licenses/validate/ (from "validate_license" method)
 		 */
-		if ( ! $this->debug ) {
-			// Request made without activate/deactivate/validate endpoint, $request => WP_Error.
-			if ( ! $valid_form ) {
-				return $this->request_error( __( 'Server debug mode is off. Only activation/deactivation/validation is possible at this time.', 'tws-license-manager-server' ), 401, $parameters );
-			}
+		if ( $this->debug ) {
+			return true;
+		}
 
-			// Prepare final route with endpoint from the client request.
-			$route = "{$this->route}/{$parameters['form_state']}/";
+		// Prepare final route with endpoint from the client request.
+		$state = isset( $parameters['form_state'] ) ? (string) $parameters['form_state'] : '';
+		$route = "{$this->route}/{$state}/";
 
-			// Client site license route did not match, $request => WP_Error.
-			if ( strpos( $request->get_route(), $route ) !== 0 ) {
-				$msg  = __( 'The request route did not match for further processing.', 'tws-license-manager-server' );
-				$data = array(
-					'request_route' => $request->get_route(),
-					'remote_route'  => $route,
-					'parameters'    => $parameters,
-				);
+		// Not a activate/deactivate/validate route, $request => valid.
+		if ( strpos( $request->get_route(), $route ) !== 0 ) {
+			return true;
+		}
 
-				return $this->request_error( $msg, 401, $data );
-			}
-
-			// Request is not being sent from license form (except validation), $request => WP_Error.
-			if (
-				( 'validate' !== $parameters['form_state'] ) &&
-				// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode
-				( 'TWS' !== $auth_type || base64_decode( $auth_val ) !== $this->hash )
-			) {
-				return $this->request_error( __( 'Request was made outside of license form.', 'tws-license-manager-server' ), 401 );
-			}
+		// Request is not being sent from license form (except validation), $request => WP_Error.
+		if (
+			( 'validate' !== $state ) &&
+			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode
+			( 'TWS' !== $auth_type || base64_decode( $auth_val ) !== $this->hash )
+		) {
+			return $this->request_error( __( 'Request was made outside of license form.', 'tws-license-manager-server' ), 401 );
 		}
 
 		// Extract license key from the API path and get license object.
@@ -258,7 +250,7 @@ final class Manager implements Options_Interface {
 			? $this->validation_data['license_validate_response']
 			: $this->defaults['license_validate_response'];
 
-			return $this->debug ? true : $this->request_error( $msg, 404, $error_data );
+			return $this->request_error( $msg, 404, $error_data );
 		}
 
 		$meta_key     = 'data-' . self::parse_url( $client_url );
@@ -272,7 +264,7 @@ final class Manager implements Options_Interface {
 
 		// Check for validation request before proceeding further.
 		if (
-			( 'validate' === $parameters['form_state'] ) &&
+			( 'validate' === $state ) &&
 			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode
 			( 'TWS' !== $auth_type || "{$meta_key}/{$purchased_on}:{$this->hash}" !== base64_decode( $auth_val ) )
 		) {
@@ -307,7 +299,7 @@ final class Manager implements Options_Interface {
 			if ( is_wp_error( $this->is_license_valid( $license ) ) ) {
 				// Let the scheduled request pass.
 				if (
-					'validate' === $parameters['form_state'] &&
+					'validate' === $state &&
 					isset( $parameters['flag'] ) &&
 					'cron' === $parameters['flag']
 				) {
@@ -328,7 +320,7 @@ final class Manager implements Options_Interface {
 			*/
 
 			// Lets stop there. Can't deactivate just renewed license.
-			if ( 'deactivate' === $parameters['form_state'] ) {
+			if ( 'deactivate' === $state ) {
 				return $this->request_error( __( 'Please activate your license first after renewal.', 'tws-license-manager-server' ), 400 );
 			}
 
@@ -363,10 +355,10 @@ final class Manager implements Options_Interface {
 		}
 
 		// Same client, active status and from activate license form, $request => WP_Error.
-		$active = ( $client_url === $saved_url ) && ( 'active' === $saved_status ) && ( 'activate' === $parameters['form_state'] );
+		$active = ( $client_url === $saved_url ) && ( 'active' === $saved_status ) && ( 'activate' === $state );
 
 		// Same client, inactive status and from deactivate license form, $request => WP_Error.
-		$deactive = ( $client_url === $saved_url ) && ( 'inactive' === $saved_status ) && ( 'deactivate' === $parameters['form_state'] );
+		$deactive = ( $client_url === $saved_url ) && ( 'inactive' === $saved_status ) && ( 'deactivate' === $state );
 
 		// If email validation set, check that also.
 		if ( $user_email ) {
@@ -382,7 +374,7 @@ final class Manager implements Options_Interface {
 			$msg = sprintf(
 				/* Translators: %s - activate/deactivate state. */
 				__( 'The license for this site has already been %sd.', 'tws-license-manager-server' ),
-				"{$parameters['form_state']}"
+				"{$state}"
 			);
 			return $this->request_error( $msg, 400 );
 		}
@@ -774,16 +766,7 @@ final class Manager implements Options_Interface {
 		$get_meta = lmfwc_get_license_meta( $license->getId(), $meta_key, true );
 		$metadata = is_array( $get_meta ) ? $get_meta : array();
 
-		$return = $metadata;
-
-		if ( $key ) {
-			$return = array(
-				'key'   => $meta_key,
-				'value' => $metadata,
-			);
-		}
-
-		return $return;
+		return $key ? array( 'key' => $meta_key, 'value' => $metadata ) : $metadata;
 	}
 
 	/**
