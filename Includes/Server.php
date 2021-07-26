@@ -151,7 +151,19 @@ final class Server {
 
 		global $pagenow;
 
-		if ( 'post-new.php' === $pagenow && 'product' === get_post_type() && current_user_can( 'manage_options' ) ) {
+		/**
+		 * WPHOOK: Filter -> whether to show notice on product edit page or not.
+		 *
+		 * @param bool $show To show notice or not.
+		 * @var   bool
+		 * @example - Hide the notice.
+		 * ```
+		 * add_filter( 'hzfex_license_manager_server_show_product_edit_page_notice', '__return_false' );
+		 * ```
+		 */
+		$show = apply_filters( 'hzfex_license_manager_server_show_product_edit_page_notice', true );
+
+		if ( 'post-new.php' === $pagenow && 'product' === get_post_type() && current_user_can( 'manage_options' ) && $show ) {
 			$msg = __( 'The same crypto secret key defined by constant <b>LMFWC_PLUGIN_SECRET</b> must be used when initializing license manager client.', 'tws-liense-manager-server' );
 
 			echo '<div class="notice notice-success"><p>' . wp_kses_post( $msg ) . '</p><p><b><em><code>TheWebSolver\License_Manager\API\Manager::hash_with(' . esc_html( LMFWC_PLUGIN_SECRET ) . ')</code></em></b></p></div>';
