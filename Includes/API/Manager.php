@@ -549,7 +549,7 @@ final class Manager implements Options_Interface {
 			'hzfex_license_manager_server_response_license_meta',
 			$metadata,
 			$license,
-			$form_state,
+			$form_state
 		);
 
 		// Check if key is present.
