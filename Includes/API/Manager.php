@@ -24,6 +24,9 @@ use TheWebSolver\License_Manager\Options_Interface;
 use TheWebSolver\License_Manager\Server;
 use TheWebSolver\License_Manager\Single_Instance;
 use TheWebSolver\License_Manager\Options_Handler;
+use WP_Error;
+use WP_Rest_Server;
+use WP_Rest_Request;
 
 // Exit if accessed directly.
 defined( 'ABSPATH' ) || exit;
@@ -35,13 +38,6 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Manager implements Options_Interface {
 	use Single_Instance, Options_Handler;
-
-	/**
-	 * API Validation data.
-	 *
-	 * @var array
-	 */
-	private $validation_data = array();
 
 	/**
 	 * REST API route.
@@ -72,11 +68,76 @@ final class Manager implements Options_Interface {
 	private $hash = '';
 
 	/**
+	 * The request URL.
+	 *
+	 * @var string
+	 */
+	public $client_url = '';
+
+	/**
+	 * The WooCommerce product slug.
+	 *
+	 * @var string
+	 */
+	public $product_slug = '';
+
+	/**
+	 * The request license key.
+	 *
+	 * @var string
+	 */
+	public $license_key = '';
+
+	/**
+	 * The request License instance.
+	 *
+	 * NOTE: This should not be used when returning response data.
+	 *
+	 * The response data has already been modified if the
+	 * request succeeds. Fresh license data must be
+	 * fetched so license activation times is accurate.
+	 *
+	 * @var License
+	 */
+	public $license;
+
+	/**
+	 * Current request type.
+	 *
+	 * Possible values are `activate|deactivate|validate`.
+	 *
+	 * @var string
+	 */
+	public $request_type = '';
+
+	/**
+	 * Current request parameters.
+	 *
+	 * @var array
+	 */
+	public $parameters = array();
+
+	/**
+	 * License meta key.
+	 *
+	 * @var string
+	 */
+	public $meta_key = '';
+
+	/**
+	 * License metadata.
+	 *
+	 * @var array
+	 */
+	public $meta = array();
+
+	/**
 	 * Sets up server manager.
 	 *
 	 * @return Manager
 	 */
-	public function instance() {
+	public function instance(): Manager {
+		$options        = (array) get_option( self::OPTION, array() );
 		$this->defaults = array(
 			'debug_mode'                => 'off',
 			'debug_endpoint'            => 'off',
@@ -85,39 +146,34 @@ final class Manager implements Options_Interface {
 			'order_validate_response'   => 'Order not found.',
 			'name_validate_response'    => 'Product not found.',
 		);
-		$options        = wp_parse_args( get_option( self::OPTION, array() ), $this->defaults );
-		$base           = '/lmfwc/v2/';
-		$endpoint       = 'licenses';
 
-		if ( ! is_wp_error( $hash = Server::load()->secret_key() ) ) { // phpcs:ignore
-			$this->hash = $hash;
+		// phpcs:ignore Squiz.PHP.DisallowMultipleAssignments.FoundInControlStructure, WordPress.CodeAnalysis.AssignmentInCondition
+		if ( is_string( $hash = Server::load()->secret_key() ) ) {
+			$this->hash = (string) $hash;
 		}
 
-		foreach ( $this->defaults as $key => $field ) {
-			// Set debug option and continue.
-			if ( 'debug_mode' === $key ) {
-				$this->debug = 'on' === $options[ $key ] ? true : false;
-
-				continue;
-			}
-
-			// Set endpoint option and continue.
-			if ( 'debug_endpoint' === $key ) {
-				$endpoint = $this->debug && 'on' === $options[ $key ] ? 'generators' : 'licenses';
-
-				continue;
-			}
-
-			if ( ! empty( $options[ $key ] ) ) {
-				$this->validation_data[ $key ] = $options[ $key ];
-			}
+		if ( ! empty( $options ) ) {
+			array_walk( $options, array( $this, 'set_options' ) );
+		} else {
+			$this->options = $this->defaults;
 		}
 
-		// Set properties.
-		$this->options = $options;
-		$this->route   = $base . $endpoint;
+		$this->debug = 'on' === $this->options['debug_mode'];
+		$generator   = 'on' === $this->options['debug_endpoint'];
+		$endpoint    = $this->debug && $generator ? 'generators' : 'licenses';
+		$this->route = "/lmfwc/v2/$endpoint";
 
 		return $this;
+	}
+
+	/**
+	 * Sets options.
+	 *
+	 * @param string $option The option value.
+	 * @param string $key    The option key.
+	 */
+	public function set_options( string $option, string $key ) {
+		$this->options[ $key ] = '' !== $option ? $option : $this->defaults[ $key ];
 	}
 
 	/**
@@ -127,6 +183,99 @@ final class Manager implements Options_Interface {
 		$this->validate();
 		$this->update();
 		$this->expired();
+	}
+
+	/**
+	 * Checks if request route is for managing license.
+	 *
+	 * The check is made against `activate|deactivate|validate` states in the
+	 * request route (that is present just before the license key in URL).
+	 * Route is valid if an array with only one state is found.
+	 *
+	 * @param string $route The state in request route from WP REST API.
+	 *
+	 * @return string The route state if found, empty string otherwise.
+	 */
+	private function is_license_route( string $route ): string {
+		$states   = array( 'activate', 'deactivate', 'validate' );
+		$callback = function( $state ) use ( $route ) {
+			return strpos( $route, "{$this->route}/{$state}/" ) === 0;
+		};
+		$endpoint = array_filter( $states, $callback );
+
+		// Valid route must contain only one state in an array.
+		return ! empty( $endpoint ) && 1 === count( $endpoint ) ? (string) array_shift( $endpoint ) : '';
+	}
+
+	/**
+	 * Gets license meta key.
+	 *
+	 * @return string
+	 */
+	private function get_meta_key(): string {
+		return self::parse_url( $this->client_url ) . '-' . $this->product_slug;
+	}
+
+	/**
+	 * Upgrades license metadata.
+	 *
+	 * The upgrade is for the old license meta key.
+	 * New meta key is set from clinet URL and product slug.
+	 * Doing so will allow client manager to be used on multiple
+	 * premium plugins/themes on the same site and keeping
+	 * the meta key unique.
+	 *
+	 * @param bool $update Whether to update to new meta key or not.
+	 *
+	 * @return bool True if old meta found, false otherwise.
+	 */
+	private function upgrade_meta( bool $update = false ): bool {
+		$id      = $this->license->getId();
+		$old_key = 'data-' . self::parse_url( $this->client_url );
+		$old_val = lmfwc_get_license_meta( $id, $old_key, true );
+
+		if ( false === $old_val ) {
+			return false;
+		}
+
+		if ( $update ) {
+			$this->update_meta( $old_val );
+
+			lmfwc_delete_license_meta( $id, $old_key, $old_val );
+		}
+
+		return true;
+	}
+
+	/**
+	 * Syncs activated count.
+	 *
+	 * This syncs license's times activated count after expiry.
+	 * Decreases active count by 1 so new activation doesn't count for total activation.
+	 *
+	 * This is done because if request is valid, response will increase active count by 1.
+	 *
+	 * @param License $license The license object.
+	 */
+	private function sync_active_count( License $license ) {
+		$data = array( 'times_activated' => $license->getTimesActivated() - 1 );
+
+		lmfwc_update_license( $this->license_key, $data );
+	}
+
+	/**
+	 * Gets response error that is to be sent back with data.
+	 *
+	 * @param string $msg  Error message.
+	 * @param int    $code Error Code.
+	 *
+	 * @return array
+	 */
+	private function response_error( string $msg, int $code = 400 ): array {
+		return array(
+			'message' => $msg,
+			'code'    => $code,
+		);
 	}
 
 	/**
@@ -140,7 +289,6 @@ final class Manager implements Options_Interface {
 	 * Updates license status and metadata.
 	 */
 	private function update() {
-		// Modify response and perform additional tasks.
 		add_filter( 'lmfwc_rest_api_pre_response', array( $this, 'parse_response' ), 10, 3 );
 	}
 
@@ -159,50 +307,25 @@ final class Manager implements Options_Interface {
 	/**
 	 * Validates REST API request on server before sending response.
 	 *
-	 * @param mixed            $result  Response to replace the requested version with.
-	 *                                  Can be anything a normal endpoint can return,
-	 *                                  or null to not hijack the request.
-	 * @param \WP_Rest_Server  $server  Server instance.
-	 * @param \WP_Rest_Request $request Request used to generate the response.
+	 * @param true|WP_Error   $result  Response to replace the requested version with.
+	 *                                 Can be anything a normal endpoint can return,
+	 *                                 or null to not hijack the request.
+	 * @param WP_Rest_Server  $server  Server instance.
+	 * @param WP_Rest_Request $request Request used to generate the response.
 	 *
-	 * @link https://licensemanager.at/docs/tutorials-how-to/additional-rest-api-validation/
+	 * @return true|WP_Error
+	 *
+	 * @link https://www.licensemanager.at/docs/tutorials-how-to/rest-api/validating-custom-request-data
 	 * @link https://developer.wordpress.org/reference/hooks/rest_pre_dispatch/
 	 */
-	public function validate_request( $result, $server, $request ) {
-		$route      = $this->route;
-		$parameters = $request->get_params();
-
-		// Get request headers for validation.
-		$authorize  = $request->get_header_as_array( 'authorization' );
-		$authorize  = is_array( $authorize ) ? (string) $authorize[0] : 'Basic None';
-		$from       = $request->get_header_as_array( 'from' );
-		$user_email = is_array( $from ) ? (string) $from[0] : '';
-		$client     = $request->get_header_as_array( 'referer' );
-		$client_url = is_array( $client ) ? (string) $client[0] : '';
-		$authorize  = explode( ' ', $authorize );
-		$auth_type  = isset( $authorize[0] ) ? $authorize[0] : '';
-		$auth_val   = isset( $authorize[1] ) ? $authorize[1] : '';
-
-		// phpcs:disable -- Error code testing OK. Uncomment it to get requested data.
-		// return new \WP_Error(
-		// 	'test_request',
-		// 	'test request message',
-		// 	array(
-		// 		'route'         => $route,
-		// 		'request_route' => $request->get_route(),
-		// 		'parameters'    => $parameters,
-		// 		'from'          => $user_email,
-		// 		'referer'       => $client_url,
-		// 		'authorize'     => $authorize,
-		// 	)
-		// );
-		// phpcs:enable
-
+	public function validate_request( $result, WP_Rest_Server $server, WP_Rest_Request $request ) {
 		/**
 		 * Debug mode on server can allow any valid API endpoint request.
 		 *
 		 * When debug mode if off:
 		 * - License shouldn't already have been activated/deactivated for same site.
+		 * -- Meaning once license is active for the site, it can't be activated again.
+		 * -- It can only be deactivated after that and vice versa.
 		 * - Route must be for license activation/deactivation/validation.
 		 * - Request can only be made from license form (or "validate_license" method).
 		 * - Endpoint (activate/deactivate) will be generated from the client license form.
@@ -215,14 +338,54 @@ final class Manager implements Options_Interface {
 			return true;
 		}
 
-		// Prepare final route with endpoint from the client request.
-		$state = isset( $parameters['form_state'] ) ? (string) $parameters['form_state'] : '';
-		$route = "{$this->route}/{$state}/";
+		$valid_route = $this->is_license_route( $request->get_route() );
 
 		// Not a activate/deactivate/validate route, $request => valid.
-		if ( strpos( $request->get_route(), $route ) !== 0 ) {
+		if ( ! $valid_route ) {
 			return true;
 		}
+
+		/**
+		 * WPHOOK: Filter -> Forbit API access directly.
+		 *
+		 * Whether License Manager for WooCommerce can be accessed using REST API
+		 * programs such as browser URL, Postman, etc.
+		 *
+		 * Restricting here means API can only be accessed when using the license form
+		 * at the client site. However, it can be hacked by passing URL parameter like this:
+		 * `'form_state'='validate'`. Still, even if form_state is passed in the parameter
+		 * as a hacking mechanism, futher validations are in place. So, no worries there.
+		 *
+		 * @param bool $restrict Whether to restrict direct access or not.
+		 * @var   bool           True to restrict, false to allow direct access.
+		 * @example usage Use below code to remove API restriction. By default, it is set to true.
+		 * ```
+		 * add_filter('hzfex_license_manager_server_request_restrict_api_access', '__return_false');
+		 * ```
+		 */
+		$restrict   = apply_filters( 'hzfex_license_manager_server_request_restrict_api_access', true );
+		$parameters = $request->get_params();
+		$state      = isset( $parameters['form_state'] ) ? (string) $parameters['form_state'] : '';
+		$route      = "{$this->route}/{$state}/";
+		$error      = $this->request_error( __( 'Direct access to License API is forbidden.', 'tws-license-manager-server' ), 403 );
+
+		if ( ! $state ) {
+			// Forbit API access directly from REST API programs if restriction applied, else $request => valid.
+			return $restrict ? $error : true;
+		} elseif ( $state !== $valid_route ) {
+			// Prevent different state on route and parameter.
+			return $error;
+		}
+
+		$authorize  = $request->get_header_as_array( 'authorization' );
+		$authorize  = is_array( $authorize ) ? (string) $authorize[0] : 'Basic None';
+		$from       = $request->get_header_as_array( 'from' );
+		$user_email = is_array( $from ) ? (string) $from[0] : '';
+		$client     = $request->get_header_as_array( 'referer' );
+		$client_url = is_array( $client ) ? (string) $client[0] : '';
+		$authorize  = explode( ' ', $authorize );
+		$auth_type  = isset( $authorize[0] ) ? $authorize[0] : '';
+		$auth_val   = isset( $authorize[1] ) ? $authorize[1] : '';
 
 		// Request is not being sent from license form (except validation), $request => WP_Error.
 		if (
@@ -230,7 +393,14 @@ final class Manager implements Options_Interface {
 			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode
 			( 'TWS' !== $auth_type || base64_decode( $auth_val ) !== $this->hash )
 		) {
-			return $this->request_error( __( 'Request was made outside of license form.', 'tws-license-manager-server' ), 401 );
+			return $this->request_error(
+				sprintf(
+					/* translators: %s: The current activate/deactivate request type. */
+					__( 'You are not authorized to %s license.', 'tws-license-manager-server' ),
+					$state
+				),
+				401
+			);
 		}
 
 		// Extract license key from the API path and get license object.
@@ -244,17 +414,25 @@ final class Manager implements Options_Interface {
 			'remote_route'  => $route,
 		);
 
-		// No license key in debug mode, $request => valid, WP_Error otherwise.
+		// No license found, $request => WP_Error.
 		if ( ! $license ) {
-			$msg = isset( $this->validation_data['license_validate_response'] )
-			? $this->validation_data['license_validate_response']
-			: $this->defaults['license_validate_response'];
-
-			return $this->request_error( $msg, 404, $error_data );
+			return $this->request_error( $this->options['license_validate_response'], 404, $error_data );
 		}
 
-		$meta_key     = 'data-' . self::parse_url( $client_url );
-		$metadata     = lmfwc_get_license_meta( $license->getId(), $meta_key, true );
+		$auth_key             = 'data-' . self::parse_url( $client_url );
+		$this->client_url     = $client_url;
+		$this->product_slug   = (string) $parameters['slug'];
+		$this->meta_key       = $this->get_meta_key();
+		$this->license_key    = $endpoint[1];
+		$this->license        = $license;
+		$this->request_type   = $state;
+		$this->parameters     = $parameters;
+		$this->meta['status'] = 'deactivate' === $state ? 'inactive' : 'active';
+		$this->meta['url']    = $client_url;
+
+		$this->upgrade_meta( true );
+
+		$metadata     = $this->get_metadata();
 		$metadata     = is_array( $metadata ) ? $metadata : array();
 		$saved_email  = isset( $metadata['email'] ) ? (string) $metadata['email'] : '';
 		$saved_url    = isset( $metadata['url'] ) ? (string) $metadata['url'] : '';
@@ -266,7 +444,7 @@ final class Manager implements Options_Interface {
 		if (
 			( 'validate' === $state ) &&
 			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode
-			( 'TWS' !== $auth_type || "{$meta_key}/{$purchased_on}:{$this->hash}" !== base64_decode( $auth_val ) )
+			( 'TWS' !== $auth_type || "{$auth_key}/{$purchased_on}:{$this->hash}" !== base64_decode( $auth_val ) )
 		) {
 			return $this->request_error(
 				__( 'You are not authorized for making license validation.', 'tws-license-manager-server' ),
@@ -296,7 +474,7 @@ final class Manager implements Options_Interface {
 		 */
 		if ( 'yes' === $has_expired ) {
 			// License still expired, stop processing further.
-			if ( is_wp_error( $this->is_license_valid( $license ) ) ) {
+			if ( is_wp_error( $this->is_license_valid() ) ) {
 				// Let the scheduled request pass.
 				if (
 					'validate' === $state &&
@@ -306,7 +484,6 @@ final class Manager implements Options_Interface {
 					return true;
 				}
 
-				// Expired license can't be activated.
 				return $this->request_error(
 					__( 'Your license has expired. Renew your license first.', 'tws-license-manager-server' ),
 					400
@@ -325,33 +502,29 @@ final class Manager implements Options_Interface {
 			}
 
 			// Create newly renewed license metadata.
-			$renewed_metadata = array();
+			$renewed_metadata = array(
+				'status' => $saved_status,
+				'url'    => $client_url,
+			);
 
 			if ( $user_email ) {
 				$renewed_metadata['email'] = $user_email;
 			}
 
-			$renewed_metadata['url']    = $client_url;
-			$renewed_metadata['status'] = $saved_status;
-
 			// Check if license was active when it expired.
 			if ( 'active' === $saved_status ) {
 				$renewed_metadata['status'] = 'inactive';
 
+				$this->sync_active_count( $license );
+
 				// Hack saved status so new activation is possible after renewal.
 				$saved_status = 'inactive';
-
-				// Decrease active count by 1 so new activation doesn't count for total activation.
-				lmfwc_update_license(
-					$license->getDecryptedLicenseKey(),
-					array( 'times_activated' => intval( $license->getTimesActivated() ) - 1 )
-				);
 			}
 
 			// Finally, clear the expired flag.
 			$renewed_metadata['expired'] = 'no';
 
-			$this->update_meta( $license->getId(), $meta_key, $renewed_metadata );
+			$this->update_meta( $renewed_metadata );
 		}
 
 		// Same client, active status and from activate license form, $request => WP_Error.
@@ -362,9 +535,10 @@ final class Manager implements Options_Interface {
 
 		// If email validation set, check that also.
 		if ( $user_email ) {
-			$active     = $active && ( $user_email === $saved_email );
-			$deactive   = $deactive && ( $user_email === $saved_email );
-			$parameters = array_merge( $parameters, array( 'email' => $user_email ) );
+			$active                    = $active && ( $user_email === $saved_email );
+			$deactive                  = $deactive && ( $user_email === $saved_email );
+			$this->meta['email']       = $user_email;
+			$this->parameters['email'] = $user_email;
 		}
 
 		// Client manager already implements whether license is already active/inactive.
@@ -379,46 +553,34 @@ final class Manager implements Options_Interface {
 			return $this->request_error( $msg, 400 );
 		}
 
-		return $this->is_valid_request( $license, $parameters, $client_url );
+		return $this->is_valid_request();
 	}
 
 	/**
 	 * Validates request license and parameters.
 	 *
-	 * @param License $license    The product license object.
-	 * @param array   $parameters The client request parameters.
-	 * @param string  $client_url The URL of client site from where request is generated.
-	 *
-	 * @return true|\WP_Error True if everything is validated, WP_Error otherwise.
+	 * @return true|WP_Error True if everything is validated, WP_Error otherwise.
 	 */
-	private function is_valid_request( License $license, array $parameters, string $client_url ) {
-		$metadata = array();
+	private function is_valid_request() {
+		$parameters = $this->parameters;
 
 		// Product slug didn't match with WooCommerce Product Title, $request => WP_Error.
-		if ( array_key_exists( 'slug', $parameters ) ) {
-			$product = wc_get_product( $license->getProductId() );
-			$msg     = isset( $this->validation_data['name_validate_response'] )
-			? $this->validation_data['name_validate_response']
-			: $this->defaults['name_validate_response'];
+		// Always check for product slug as it is a required parameter.
+		$product = wc_get_product( $this->license->getProductId() );
+		$error   = $this->request_error( $this->options['name_validate_response'], 404 );
 
-			$error = $this->request_error( $msg, 404 );
-
-			if (
-				! ( $product instanceof \WC_Product ) ||
-				$parameters['slug'] !== $product->get_slug()
-			) {
-				return $error;
-			}
+		if (
+			! array_key_exists( 'slug', $parameters )
+			|| ! ( $product instanceof \WC_Product )
+			|| $parameters['slug'] !== $product->get_slug()
+		) {
+			return $error;
 		}
 
 		// Order ID didn't match with WooCommerce order ID, $request => WP_Error.
 		if ( array_key_exists( 'order_id', $parameters ) ) {
-			$order = wc_get_order( $license->getOrderId() );
-			$msg   = isset( $this->validation_data['order_validate_response'] )
-			? $this->validation_data['order_validate_response']
-			: $this->defaults['order_validate_response'];
-
-			$error = $this->request_error( $msg, 404 );
+			$order = wc_get_order( $this->license->getOrderId() );
+			$error = $this->request_error( $this->options['order_validate_response'], 404 );
 
 			if (
 				! ( $order instanceof \WC_Order ) ||
@@ -430,12 +592,8 @@ final class Manager implements Options_Interface {
 
 		// Email address didn't match with WordPress user email, $request => WP_Error.
 		if ( array_key_exists( 'email', $parameters ) ) {
-			$user = get_userdata( $license->getUserId() );
-			$msg  = isset( $this->validation_data['email_validate_response'] )
-			? $this->validation_data['email_validate_response']
-			: $this->defaults['email_validate_response'];
-
-			$error = $this->request_error( $msg, 404 );
+			$user  = get_userdata( $this->license->getUserId() );
+			$error = $this->request_error( $this->options['email_validate_response'], 404 );
 
 			if (
 				! ( $user instanceof \WP_User ) ||
@@ -443,35 +601,29 @@ final class Manager implements Options_Interface {
 			) {
 				return $error;
 			}
-			// Save email address as license meta.
-			$metadata['email'] = $parameters['email'];
 		}
 
 		/**
-		 * WPHOOK: Action -> Fires after parameters validation.
+		 * WPHOOK: Filter -> Request validation.
 		 *
-		 * Any other validation besides above default can be hooked with this action
+		 * Any other validation besides above default can be filtered
 		 * and validation check can be performed as required.
 		 *
-		 * @param License $license    The license object.
-		 * @param array   $parameters The request parameters.
+		 * NOTE: Devs must always return `true` on success, `WP_Error` on failure.
+		 *
+		 * @param License        $valid If request is valid.
+		 * @param Manager        $this  The manager instance.
+		 * @var   true|WP_Error
 		 */
-		do_action( 'hzfex_license_manager_server_request_validation', $license, $parameters );
+		$valid = apply_filters( 'hzfex_license_manager_server_request_validation', true, $this );
 
-		// Prepare meta key and value to save.
-		$transient       = sha1( $license->getDecryptedLicenseKey() );
-		$meta_key        = 'data-' . self::parse_url( $client_url );
-		$metadata['key'] = $meta_key;
-		$metadata['url'] = $client_url;
-
-		// Save metadata for 5 minutes to catch with response, then delete.
-		set_transient( $transient, $metadata, MINUTE_IN_SECONDS * 5 );
-
-		return true;
+		return $valid;
 	}
 
 	/**
 	 * Handles response.
+	 *
+	 * Possible status of a license: SOLD(1), DELIVERED(2), ACTIVE(3), & INACTIVE(4).
 	 *
 	 * @param string $method The request method.
 	 * @param string $route  The request route name.
@@ -479,205 +631,141 @@ final class Manager implements Options_Interface {
 	 *
 	 * @return array The modified response data.
 	 *
-	 * @link https://www.licensemanager.at/docs/tutorials-how-to/modifying-the-rest-api-response/
+	 * @link https://www.licensemanager.at/docs/tutorials-how-to/rest-api/modifying-response-data
 	 */
-	public function parse_response( $method, $route, $data ) {
+	public function parse_response( $method, string $route, array $data ): array {
 		// Bail early if is in debug mode.
 		if ( $this->debug ) {
 			return $data;
 		}
 
-		// Query parameters not found from request, send $data without doing anything else.
-		if ( ! isset( $_SERVER['QUERY_STRING'] ) ) {
-			return $data;
-		}
-
-		// Get all request parameters.
-		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
-		parse_str( wp_unslash( $_SERVER['QUERY_STRING'] ), $parameters );
-
-		// Get activate/deactivate/validate form state.
-		$form_state = isset( $parameters['form_state'] ) ? (string) $parameters['form_state'] : '';
-		$endpoint   = "v2/licenses/{$form_state}/{license_key}";
+		$endpoint = "v2/licenses/{$this->request_type}/{license_key}";
 
 		// Handle validate license for that endpoint and stop processing further.
 		if ( 'v2/licenses/validate/{license_key}' === $endpoint ) {
-			return $this->send_validate_response( $data, $parameters );
+			return $this->send_validate_response( $data );
 		}
 
 		// No activate/deactivate happening from the client license form, stop further processing.
 		if ( $endpoint !== $route ) {
-			$data['error'] = __( 'Something went wrong. Please contact plugin support.', 'tws-license-manager-server' );
-
 			return $data;
 		}
 
-		// Possible status of a license: SOLD(1), DELIVERED(2), ACTIVE(3), & INACTIVE(4).
-		// Since, we are saving as license meta, it will be 'active' or 'inactive'.
-		$status_text = 'deactivate' === $form_state ? 'inactive' : 'active';
-		$license_key = $data['licenseKey'];
-		$license     = lmfwc_get_license( $license_key );
-		$transient   = sha1( $license->getDecryptedLicenseKey() );
-		$metadata    = get_transient( $transient );
-		$metadata    = is_array( $metadata ) ? $metadata : array();
-		$meta_key    = '';
-
-		// Send license status text as response data with state key.
-		$data['state'] = $status_text;
-
-		// Clear meta key from metadata.
-		if ( isset( $metadata['key'] ) ) {
-			$meta_key = (string) $metadata['key'];
-			unset( $metadata['key'] );
-		}
-
-		// Send meta key as response data.
-		$data['key'] = $meta_key;
-
-		// Set active status as meta value.
-		$metadata['status'] = $status_text;
+		$id = isset( $data['productId'] ) ? (int) $data['productId'] : 0;
 
 		/**
-		 * WPHOOK: Filter -> License meta value.
+		 * WPHOOK: Filter -> License meta data.
 		 *
-		 * @param array   $license_meta Meta value to save to database.
-		 * @param License $license      Current license object.
-		 * @param string  $form_state   Current client form state. Can be `activate` or `deactivate`.
-		 * @var   array
+		 * @param array     $license_meta Meta value to save to database.
+		 * @param Manager   $this         The manager instance.
+		 * @var   string[]
 		 */
-		$license_meta = apply_filters(
-			'hzfex_license_manager_server_response_license_meta',
-			$metadata,
-			$license,
-			$form_state
-		);
+		$meta = apply_filters( 'hzfex_license_manager_server_response_license_meta', $this->meta, $this );
 
 		// Check if key is present.
-		if ( $meta_key ) {
-			$this->update_meta( $license->getId(), $meta_key, $license_meta );
+		if ( $this->meta_key ) {
+			$this->update_meta( $meta );
 		}
 
-		// Clear transient.
-		delete_transient( $transient );
-
-		return $this->send_product_details_with_data( $data, $license, $meta_key, $license_meta );
+		return $this->send_product_details_with_data( $id, $meta );
 	}
 
 	/**
 	 * Sends product meta details along with response.
 	 *
-	 * @param array   $data     The response data.
-	 * @param License $license  The current license instance.
-	 * @param string  $key      The license meta key.
-	 * @param array   $metadata The license meta data.
+	 * @param int   $id       The license product ID.
+	 * @param array $metadata The license meta data.
 	 *
 	 * @return array The modified response data.
 	 */
-	private function send_product_details_with_data( array $data, License $license, string $key, array $metadata ): array {
-		$product_id   = isset( $data['productId'] ) ? $data['productId'] : 0;
-		$product_data = Server::load()->product->get_data( $product_id );
+	private function send_product_details_with_data( int $id, array $metadata ): array {
+		$data = Server::load()->product->get_data( $id );
 
-		if ( 'active' === $data['state'] ) {
-			$product_data['package'] = $this->get_package_for( $license );
+		if ( 'active' === $metadata['status'] ) {
+			$data['package'] = $this->get_package_for( $this->license );
 		}
 
-		return $this->send_response( $license, $key, $metadata, $product_data, $data['state'] );
+		return $this->send_response( $metadata, $data );
 	}
 
 	/**
 	 * Sends response data for validate endpoint.
 	 *
-	 * @param array $data       The response data.
-	 * @param array $parameters The request query parameters.
+	 * @param array $data The response data.
 	 *
 	 * @return array The modified response data.
 	 */
-	private function send_validate_response( array $data, array $parameters ): array {
-		//phpcs:ignore -- Get server request URI OK.
-		$uri = (string) $_SERVER['REQUEST_URI'];
+	private function send_validate_response( array $data ): array {
+		// License not found for some reason, $data => error.
+		if ( ! $this->license ) {
+			$data['error'] = $this->response_error( __( 'License can not be verified.', 'tws-license-manager-server' ) );
 
-		// Trim everything before the license key.
-		$from_key = str_replace( '/wp-json/lmfwc/v2/licenses/validate/', '', $uri );
+			return $data;
+		}
 
-		// Trim the URI after license key (where query starts).
-		$key      = substr( $from_key, 0, strpos( $from_key, '?' ) );
-		$license  = lmfwc_get_license( $key );
-		$metadata = array();
+		$metadata = $this->get_metadata();
 
-		// Add error messages to response data if license has expired and update the the meta.
-		if ( $license ) {
-			$meta     = $this->get_metadata( $license, true );
-			$meta_key = $meta['key'];
-			$metadata = $meta['value'];
+		// No license status meta saved, $data => error.
+		if ( ! isset( $metadata['status'] ) ) {
+			$data['error'] = $this->response_error( __( 'License status can not be verified.', 'tws-license-manager-server' ), 401 );
 
-			// Send state also.
-			$data['state'] = isset( $metadata['status'] ) ? $metadata['status'] : '';
+			return $data;
+		}
 
-			if ( is_wp_error( $this->is_license_valid( $license ) ) ) {
-				$data['state']     = 'expired';
-				$data['expiresAt'] = $license->getExpiresAt();
+		// Make license expire when the time comes.
+		if (
+			'expired' === $metadata['status'] &&
+			( ! isset( $metadata['expired'] ) || 'yes' !== $metadata['expired'] )
+		) {
+			$metadata['expired'] = 'yes';
+			$this->update_meta( $metadata );
+		}
+
+		// Send state also.
+		$data['state'] = $metadata['status'];
+
+		if ( is_wp_error( $this->is_license_valid() ) ) {
+			$data['state']     = 'expired';
+			$data['expiresAt'] = $this->license->getExpiresAt();
+
+			// Update metadata when the license gets expired (if not updated already).
+			if ( 'expired' !== $metadata['status'] ) {
+				$metadata['status']  = 'expired';
+				$metadata['expired'] = 'yes';
+
+				$this->update_meta( $metadata );
 			}
 		}
 
-		return $this->validate_license( $data, $meta_key, $metadata, $parameters, $license );
+		return $this->validate_license( $data, $metadata );
 	}
 
 	/**
 	 * Validates response data before sending back.
 	 *
-	 * @param array        $data       The response data.
-	 * @param string       $key        The license meta key.
-	 * @param array        $metadata   The saved metadata.
-	 * @param array        $parameters The request query parameters.
-	 * @param bool|License $license    The license.
+	 * @param array $data     The response data.
+	 * @param array $metadata The saved metadata.
 	 *
 	 * @return array
 	 */
-	private function validate_license( array $data, string $key, array $metadata, array $parameters, $license ): array {
-		// License can't be generated from request parameters, $data => error.
-		if ( ! $license ) {
-			return array(
-				'error' => __( 'License can not be verified.', 'tws-license-manager-server' ),
-				'code'  => 400,
-			);
-		}
-
-		// No license status meta saved, $data => error.
-		if ( ! isset( $metadata['status'] ) ) {
-			return array(
-				'error' => __( 'License status can not be verified.', 'tws-license-manager-server' ),
-				'code'  => 401,
-			);
-		}
-
+	private function validate_license( array $data, array $metadata ): array {
 		// The license state.
 		$state = (string) $data['state'];
 
-		// Make license expire when the time comes.
-		if (
-			'expired' === $state &&
-			( ! isset( $metadata['expired'] ) || 'yes' !== $metadata['expired'] )
-		) {
-			$metadata['expired'] = 'yes';
-			$this->update_meta( $license->getId(), $key, $metadata );
-		}
-
-		$flag        = isset( $parameters['flag'] ) ? (string) $parameters['flag'] : '';
+		$flag        = isset( $this->parameters['flag'] ) ? (string) $this->parameters['flag'] : '';
 		$is_schedule = $flag && 'cron' === $flag;
 		$is_update   = $flag && ( 'update_themes' === $flag || 'update_plugins' === $flag );
-		$meta        = Server::load()->product->get_data( $license->getProductId() );
+		$meta        = Server::load()->product->get_data( $this->license->getProductId() );
 
 		// Request is a scheduled (cron job) event, $data => valid.
 		if ( $is_schedule ) {
-			return $this->send_response( $license, $key, $metadata, $meta, $state );
+			return $this->send_response( $metadata, $meta );
 		}
 
 		// Request is not made for product updates, stop further processing.
 		// This is the stage where it is assumed that validation is performed without any flag.
-		// Nothing happens on server side. License data and product meta are sent back as response.
+		// Nothing happens on server side. License data is sent back as response.
 		if ( ! $is_update ) {
-			$data['code'] = 200;
-
 			return $data;
 		}
 
@@ -686,22 +774,20 @@ final class Manager implements Options_Interface {
 
 		// License is not active, $data => error.
 		if ( 'active' !== $metadata['status'] ) {
-			$data['error'] = __( 'License is not active.', 'tws-license-manager-server' );
-			$data['code']  = 402;
+			$data['error'] = $this->response_error( __( 'License is not active.', 'tws-license-manager-server' ), 402 );
 
 			return $data;
 		}
 
 		// License has expired, $data => error.
 		if ( 'expired' === $state ) {
-			$data['error'] = __( 'License has expired.', 'tws-license-manager-server' );
-			$data['code']  = 403;
+			$data['error'] = $this->response_error( __( 'License has expired.', 'tws-license-manager-server' ), 403 );
 
 			return $data;
 		}
 
 		// Set the package URL as response.
-		$data['product_meta']['package'] = $this->get_package_for( $license );
+		$data['product_meta']['package'] = $this->get_package_for( $this->license );
 
 		return $data;
 	}
@@ -709,18 +795,18 @@ final class Manager implements Options_Interface {
 	/**
 	 * Sends resposne.
 	 *
-	 * @param License $license      The license object.
-	 * @param string  $key          The license meta key.
-	 * @param array   $metadata     The license meta value.
-	 * @param array   $product_meta The licensed product metadata.
-	 * @param string  $state        The license latest state.
+	 * @param array $metadata     The license meta value.
+	 * @param array $product_meta The licensed product metadata.
 	 *
 	 * @return array
 	 */
-	public function send_response( License $license, string $key, array $metadata, array $product_meta, string $state ): array {
-		$data = array(
-			'key'          => $key,
-			'status'       => $state,
+	public function send_response( array $metadata, array $product_meta ): array {
+		// Since license activation count is changed after successful request,
+		// new database call needs to be made to get updated license details.
+		$license = lmfwc_get_license( $this->license_key );
+		$data    = array(
+			'key'          => $this->meta_key,
+			'status'       => $metadata['status'],
 			'order_id'     => $license->getOrderId(),
 			'expires_at'   => $license->getExpiresAt(),
 			'product_id'   => $license->getProductId(),
@@ -749,24 +835,14 @@ final class Manager implements Options_Interface {
 	}
 
 	/**
-	 * Gets metadata from the client request headers.
+	 * Gets license metadata.
 	 *
-	 * Only works during client request with `Referer` in request header.
-	 *
-	 * @param License $license The current license instance.
-	 * @param bool    $key     Whether to return meta key also.
-	 *
-	 * @return array Array of license meta value.
-	 *               If key is true, `array( 'key' => $meta_key, 'value' => $metadata )`.
+	 * @return array License meta value in an array.
 	 */
-	private function get_metadata( License $license, bool $key = false ) {
-		$headers  = getallheaders();
-		$client   = isset( $headers['Referer'] ) ? (string) $headers['Referer'] : '';
-		$meta_key = 'data-' . self::parse_url( $client );
-		$get_meta = lmfwc_get_license_meta( $license->getId(), $meta_key, true );
-		$metadata = is_array( $get_meta ) ? $get_meta : array();
+	private function get_metadata(): array {
+		$meta = lmfwc_get_license_meta( $this->license->getId(), $this->meta_key, true );
 
-		return $key ? array( 'key' => $meta_key, 'value' => $metadata ) : $metadata;
+		return is_array( $meta ) ? $meta : array();
 	}
 
 	/**
@@ -775,15 +851,12 @@ final class Manager implements Options_Interface {
 	 * @param License $license The current license instance.
 	 */
 	public function license_expired( License $license ) {
-		$metadata = $this->get_metadata( $license, true );
-
-		$meta_key   = $metadata['key'];
-		$meta_value = $metadata['value'];
+		$meta_value = $this->get_metadata();
 
 		if ( ! isset( $meta_value['expired'] ) || 'yes' !== $meta_value['expired'] ) {
 			$meta_value['expired'] = 'yes';
 
-			$this->update_meta( $license->getId(), $meta_key, $meta_value );
+			$this->update_meta( $meta_value );
 		}
 	}
 
@@ -794,9 +867,9 @@ final class Manager implements Options_Interface {
 	 * @param int    $status_code The error status code.
 	 * @param mixed  $data        Optional. Additional data.
 	 *
-	 * @return \WP_Error
+	 * @return WP_Error
 	 */
-	private function request_error( $message, $status_code, $data = '' ) {
+	private function request_error( string $message, int $status_code, $data = '' ) {
 		$error_data = array();
 
 		$error_data['status'] = $status_code;
@@ -805,7 +878,7 @@ final class Manager implements Options_Interface {
 			$error_data['data'] = $data;
 		}
 
-		return new \WP_Error(
+		return new WP_Error(
 			'license_server_error',
 			$message,
 			$error_data
@@ -819,7 +892,7 @@ final class Manager implements Options_Interface {
 	 *
 	 * @return string
 	 */
-	public static function parse_url( $domain ) {
+	public static function parse_url( $domain ): string {
 		$domain = wp_parse_url( $domain, PHP_URL_HOST );
 		$domain = str_replace( 'www.', '', $domain );
 
@@ -829,14 +902,13 @@ final class Manager implements Options_Interface {
 	/**
 	 * Checks license expiry date.
 	 *
-	 * @param License $license The license instance.
-	 *
-	 * @return true|\WP_Error True if not expired, WP_Error with expired message otherwise.
+	 * @return true|WP_Error True if not expired, WP_Error with expired message otherwise.
 	 *
 	 * @filesource license-manager-for-woocommerce/includes/api/v2/Licenses.php
 	 */
-	public function is_license_valid( License $license ) {
-		$expiry_date = $license->getExpiresAt();
+	public function is_license_valid() {
+		$expiry_date = $this->license->getExpiresAt();
+
 		if ( $expiry_date ) {
 			try {
 				$expires_at   = new \DateTime( $expiry_date );
@@ -849,10 +921,10 @@ final class Manager implements Options_Interface {
 				$error = sprintf(
 					/* Translators: %s - The license expiry date. */
 					__( 'The license Key expired on %s (UTC).', 'tws-license-manager-server' ),
-					'<b>' . $license->getExpiresAt() . '</b>'
+					'<b>' . $this->license->getExpiresAt() . '</b>'
 				);
 
-				return $this->request_error( $error, 405, $license->getExpiresAt() );
+				return $this->request_error( $error, 405, $this->license->getExpiresAt() );
 			}
 		}
 
@@ -864,11 +936,12 @@ final class Manager implements Options_Interface {
 	 *
 	 * If no meta key exists, new meta key/value will be added, else same meta key will be updated.
 	 *
-	 * @param int    $id    The license ID.
-	 * @param string $key   The meta key to add/update value for.
-	 * @param mixed  $value The meta value.
+	 * @param string[] $value The meta value.
 	 */
-	public function update_meta( int $id, string $key, $value ) {
+	public function update_meta( array $value ) {
+		$id  = $this->license->getId();
+		$key = $this->meta_key;
+
 		if ( false === lmfwc_get_license_meta( $id, $key, true ) ) {
 			lmfwc_add_license_meta( $id, $key, $value );
 		} else {
@@ -902,7 +975,7 @@ final class Manager implements Options_Interface {
 	 *
 	 * @return string
 	 */
-	private function get_package_for( $license ) {
+	private function get_package_for( License $license ): string {
 		// Initialize download package URL.
 		$package = '';
 
