@@ -43,25 +43,11 @@ class Checkout implements Options_Interface {
 	private $disable_guest = true;
 
 	/**
-	 * Control existing license field showing up at checkout.
+	 * The License and Order ID.
 	 *
-	 * @var bool
+	 * @var string
 	 */
-	private $check_license = true;
-
-	/**
-	 * Limit to only allow one qty of the product to be bought in a single order.
-	 *
-	 * @var bool
-	 */
-	private $limit_item = true;
-
-	/**
-	 * Redirect to checkout after add to cart.
-	 *
-	 * @var bool
-	 */
-	private $redirect = true;
+	public $license_key = '';
 
 	/**
 	 * The checkout license input field key.
@@ -106,10 +92,7 @@ class Checkout implements Options_Interface {
 		);
 		$options             = wp_parse_args( get_option( self::OPTION, array() ), $this->defaults );
 		$this->options       = $options;
-		$this->disable_guest = isset( $options['disable_guest'] ) && 'on' === $options['disable_guest'] ? true : false;
-		$this->check_license = isset( $options['license_field'] ) && 'on' === $options['license_field'] ? true : false;
-		$this->limit_item    = isset( $options['limit_item'] ) && 'on' === $options['limit_item'] ? true : false;
-		$this->redirect      = isset( $options['redirect_add_to_cart'] ) && 'on' === $options['redirect_add_to_cart'] ? true : false;
+		$this->disable_guest = isset( $options['disable_guest'] ) && 'on' === $options['disable_guest'];
 
 		$this->init_hooks();
 
@@ -134,20 +117,20 @@ class Checkout implements Options_Interface {
 		add_action( 'woocommerce_after_checkout_form', array( $this, 'restore_account' ), 999 );
 		add_action( 'woocommerce_before_checkout_process', array( $this, 'process' ), 10 );
 
-		if ( $this->check_license ) {
+		if ( isset( $this->options['license_field'] ) && 'on' === $this->options['license_field'] ) {
 			add_action( "woocommerce_{$this->options['license_field_position']}", array( $this, 'add_license_field' ) );
 		}
 
-		if ( $this->limit_item ) {
+		if ( isset( $this->options['limit_item'] ) && 'on' === $this->options['limit_item'] ) {
 			add_filter( 'woocommerce_is_sold_individually', '__return_true', 9999 );
 			add_filter( 'woocommerce_product_add_to_cart_url', array( $this, 'set_url' ), 10, 2 );
 		}
 
-		if ( $this->redirect ) {
+		if ( isset( $this->options['redirect_add_to_cart'] ) && 'on' === $this->options['redirect_add_to_cart'] ) {
 			add_filter( 'woocommerce_add_to_cart_redirect', array( $this, 'added_to_cart_redirect' ) );
 
 			// Remove added to cart message showing up at checkout after redirection.
-			add_filter( 'wc_add_to_cart_message_html', function( $message ) { return ''; } ); //phpcs:ignore
+			add_filter( 'wc_add_to_cart_message_html', '__return_empty_string' );
 		}
 		add_action( 'woocommerce_after_checkout_validation', array( $this, 'validate' ), 10, 2 );
 		add_action( 'woocommerce_checkout_create_order', array( $this, 'save_order_meta' ), 10, 2 );
@@ -168,6 +151,13 @@ class Checkout implements Options_Interface {
 	 * then a notice will be displayed depending on the user's logged in state.
 	 */
 	public function add_notice() {
+		$license_key = isset( $_COOKIE[ self::CLIENT_LICENSE ] ) ? sanitize_text_field( wp_unslash( $_COOKIE[ self::CLIENT_LICENSE ] ) ) : '';
+
+		// Bail early if license key not set or expired or user not on checkout page.
+		if ( ! $license_key || ! is_checkout() ) {
+			return;
+		}
+
 		// Delete license key cookie once cart contents change.
 		if ( ( WC()->cart instanceof \WC_Cart ) && 1 !== WC()->cart->get_cart_contents_count() ) {
 			setcookie( self::CLIENT_LICENSE, '', time() - 3600 );
@@ -175,37 +165,41 @@ class Checkout implements Options_Interface {
 			return;
 		}
 
-		$license_key = isset( $_COOKIE[ self::CLIENT_LICENSE ] ) ? sanitize_text_field( wp_unslash( $_COOKIE[ self::CLIENT_LICENSE ] ) ) : '';
-
-		// Bail if license key not set or expired or user not on checkout page.
-		if ( ! $license_key && ! is_checkout() ) {
-			return;
-		}
-
-		$label = __( 'Existing License Key', 'tws-license-manager-server' );
+		$type = 'error';
+		$msg  = sprintf(
+			/* translators: %s - The license key from client saved in cookie. */
+			__( 'Your license key [%s] is saved in cookie for 10 minutes. Please login with the same email to renew it instantly.', 'tws-license-manager-server' ),
+			"<b>{$license_key}</b>"
+		);
 
 		if ( is_user_logged_in() ) {
-			$msg = sprintf(
-				/* Translators: %1$s - The license key from client saved in cookie, %2$s - label text. */
+			$type = 'success';
+			$msg  = sprintf(
+				/* translators: 1: The license key from client saved in cookie, 2: Label text. */
 				__( 'Your license key [%1$s] has been automatically added to %2$s field.', 'tws-license-manager-server' ),
 				"<b>{$license_key}</b>",
-				'<label for="license">' . $label . '</label>',
+				'<label for="license">' . __( 'Existing License Key', 'tws-license-manager-server' ) . '</label>',
 			);
-			$type = 'success';
-		} else {
-			/* Translators: %s - The license key from client saved in cookie. */
-			$msg  = sprintf( __( 'Your license key [%s] is saved in cookie for 10 minutes. Please login with the same email to renew it instantly.', 'tws-license-manager-server' ), "<b>{$license_key}</b>" );
-			$type = 'error';
 		}
 
 		/**
 		 * WPHOOK: Filter -> Show or not the woocommerce notice for license key.
 		 *
-		 * @param bool $enable Enable notice or not.
+		 * This filter can be used to alter the notice message.
+		 * To prevent showing notice altogether, return an empty string.
+		 * `add_filter('hzfex_license_manager_server_show_license_wc_notice','__return_empty_string',10,2);`
+		 *
+		 * @param string $msg    The notice message.
+		 * @param bool   $logged Whether user is logged in or not.
+		 * @var   string
 		 */
-		if ( apply_filters( 'hzfex_license_manager_server_show_license_wc_notice', true ) ) {
-			wc_add_notice( $msg, $type );
+		$message = apply_filters( 'hzfex_license_manager_server_show_license_wc_notice', $msg, is_user_logged_in() );
+
+		if ( ! $message ) {
+			return;
 		}
+
+		wc_add_notice( $message, $type );
 		?>
 		<style type="text/css">
 			.woocommerce-message label[for="license"] {
@@ -227,15 +221,7 @@ class Checkout implements Options_Interface {
 	 */
 	public function validate( $data, $errors ) {
 		$checkout_email = isset( $data['billing_email'] ) ? $data['billing_email'] : '';
-		$license_key    = isset( $_POST[ self::META_KEY ] ) ? sanitize_text_field( wp_unslash( $_POST[ self::META_KEY ] ) ) : false; // phpcs:ignore WordPress.Security.NonceVerification.Missing
-
-		// phpcs:disable -- Test codes to check all checkout fields posted data key/value.
-		// $errors->add( 'post', maybe_serialize( $_POST ) );
-		// foreach ( $data as $key => $value ) {
-		// 	$errors->add( 'data_key', $key );
-		// 	$errors->add( 'data_value', $value );
-		// }
-		// phpcs:enable
+		$license_key    = isset( $_POST[ self::META_KEY ] ) ? sanitize_text_field( wp_unslash( $_POST[ self::META_KEY ] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing
 
 		// License key field is empty, $data => valid.
 		if ( ! $license_key ) {
@@ -303,14 +289,7 @@ class Checkout implements Options_Interface {
 				&& $product
 				&& $product === $license->getProductId()
 			) {
-				// Set option for making relation between new and old order.
-				update_option(
-					sha1( $license_key ),
-					array(
-						'order_id'   => $license->getOrderId(),
-						'license_id' => $license->getId(),
-					)
-				);
+				$this->license_key = $license_key;
 
 				return;
 			}
@@ -340,29 +319,15 @@ class Checkout implements Options_Interface {
 	 * @param array     $data  The checkout fields data.
 	 */
 	public function save_order_meta( $order, $data ) {
-		// License key field empty, no further processing.
-		// phpcs:disable WordPress.Security.NonceVerification.Missing
-		if ( ! isset( $_POST[ self::META_KEY ] ) || empty( $_POST[ self::META_KEY ] ) ) {
+		if ( ! $this->license_key ) {
 			return;
 		}
 
-		$license_key = sanitize_text_field( wp_unslash( $_POST[ self::META_KEY ] ) );
-		// phpcs:enable WordPress.Security.NonceVerification.Missing
+		// Hack lmfwc order meta to prevent generating license for this order.
+		$order->update_meta_data( 'lmfwc_order_complete', 1 );
 
-		$option    = get_option( sha1( $license_key ), array() );
-		$parent_id = isset( $option['order_id'] ) ? (int) $option['order_id'] : 0;
-
-		if ( $parent_id ) {
-			$parent_order = wc_get_order( $parent_id );
-
-			if ( $parent_order instanceof \WC_Order ) {
-				// Old order with this license is parent of this order.
-				$order->update_meta_data( self::PARENT_ORDER_KEY, $parent_id );
-
-				// Hack lmfwc order meta to prevent generating license for this order.
-				$order->update_meta_data( 'lmfwc_order_complete', 1 );
-			}
-		}
+		// Old order with this license is parent of this order.
+		$order->update_meta_data( self::PARENT_ORDER_KEY, $this->license_key );
 	}
 
 	/**
