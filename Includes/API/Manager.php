@@ -91,12 +91,6 @@ final class Manager implements Options_Interface {
 	/**
 	 * The request License instance.
 	 *
-	 * NOTE: This should not be used when returning response data.
-	 *
-	 * The response data has already been modified if the
-	 * request succeeds. Fresh license data must be
-	 * fetched so license activation times is accurate.
-	 *
 	 * @var License
 	 */
 	public $license;
@@ -127,9 +121,30 @@ final class Manager implements Options_Interface {
 	/**
 	 * License metadata.
 	 *
-	 * @var array
+	 * Will be saved before sending response
+	 *  on license activate/deactivate request only.
+	 *
+	 * @var string[]
 	 */
 	public $meta = array();
+
+	/**
+	 * Total active count for the license to be sent along response.
+	 *
+	 * This is because when license gets expired on client when it was
+	 * still activated, active count will be reduced by 1 so new
+	 * activation after license renewal will be reflected accurately.
+	 *
+	 * @var int
+	 */
+	private $active_count = 0;
+
+	/**
+	 * Whether license is valid or expired.
+	 *
+	 * @var bool
+	 */
+	public $is_valid = true;
 
 	/**
 	 * Sets up server manager.
@@ -228,6 +243,8 @@ final class Manager implements Options_Interface {
 	 * @param bool $update Whether to update to new meta key or not.
 	 *
 	 * @return bool True if old meta found, false otherwise.
+	 *
+	 * @todo Deprecate this method on next update.
 	 */
 	private function upgrade_meta( bool $update = false ): bool {
 		$id      = $this->license->getId();
@@ -253,14 +270,26 @@ final class Manager implements Options_Interface {
 	 * This syncs license's times activated count after expiry.
 	 * Decreases active count by 1 so new activation doesn't count for total activation.
 	 *
-	 * This is done because if request is valid, response will increase active count by 1.
+	 * This is done because if request is valid, response data comes
+	 * with active count increased by 1 on license activation.
 	 *
-	 * @param License $license The license object.
+	 * @return int The synced active count.
 	 */
-	private function sync_active_count( License $license ) {
-		$data = array( 'times_activated' => $license->getTimesActivated() - 1 );
+	private function sync_active_count(): int {
+		$active_count = $this->active_count;
+
+		// Bail if license has never been activated.
+		if ( 0 === $active_count ) {
+			return $active_count;
+		}
+
+		$times_activated    = $active_count - 1;
+		$this->active_count = $times_activated;
+		$data               = array( 'times_activated' => $times_activated );
 
 		lmfwc_update_license( $this->license_key, $data );
+
+		return $this->active_count;
 	}
 
 	/**
@@ -419,16 +448,40 @@ final class Manager implements Options_Interface {
 			return $this->request_error( $this->options['license_validate_response'], 404, $error_data );
 		}
 
+		// Product slug not found, $request => WP_Error.
+		// This check is implemented since v2.2 on client manager.
+		if ( ! isset( $parameters['slug'] ) || empty( $parameters['slug'] ) ) {
+			return $this->request_error(
+				sprintf(
+					/* translators: %s: The current activate/deactivate/validate request type. */
+					__( 'Product slug is required to %s license.', 'tws-license-manager-server' ),
+					$valid_route
+				),
+				404
+			);
+		}
+
+		$this->product_slug = (string) $parameters['slug'];
+
+		$product = wc_get_product( $license->getProductId() );
+		$error   = $this->request_error( $this->options['name_validate_response'], 404 );
+
+		// Product slug didn't match with WooCommerce Product on server, $request => WP_Error.
+		if ( ! $product instanceof \WC_Product || $this->product_slug !== $product->get_slug() ) {
+			return $error;
+		}
+
 		$auth_key             = 'data-' . self::parse_url( $client_url );
 		$this->client_url     = $client_url;
-		$this->product_slug   = (string) $parameters['slug'];
 		$this->meta_key       = $this->get_meta_key();
 		$this->license_key    = $endpoint[1];
 		$this->license        = $license;
 		$this->request_type   = $state;
 		$this->parameters     = $parameters;
+		$this->active_count   = $license->getTimesActivated();
 		$this->meta['status'] = 'deactivate' === $state ? 'inactive' : 'active';
 		$this->meta['url']    = $client_url;
+		$this->is_valid       = $this->is_license_valid();
 
 		$this->upgrade_meta( true );
 
@@ -474,7 +527,7 @@ final class Manager implements Options_Interface {
 		 */
 		if ( 'yes' === $has_expired ) {
 			// License still expired, stop processing further.
-			if ( is_wp_error( $this->is_license_valid() ) ) {
+			if ( ! $this->is_valid ) {
 				// Let the scheduled request pass.
 				if (
 					'validate' === $state &&
@@ -503,7 +556,7 @@ final class Manager implements Options_Interface {
 
 			// Create newly renewed license metadata.
 			$renewed_metadata = array(
-				'status' => $saved_status,
+				'status' => 'inactive',
 				'url'    => $client_url,
 			);
 
@@ -511,20 +564,21 @@ final class Manager implements Options_Interface {
 				$renewed_metadata['email'] = $user_email;
 			}
 
+			/**
+			 * WPHOOK: Filter -> License renewal meta data.
+			 *
+			 * @param array     $renewed_metadata Meta value to save to database.
+			 * @param Manager   $this             The manager instance.
+			 * @param string    $context          Where the filter is being applied.
+			 * @var   string[]
+			 */
+			$value = apply_filters( 'hzfex_license_manager_server_response_license_meta', $renewed_metadata, $this, 'renewal' );
+
+			$this->update_meta( $value );
+
 			// Check if license was active when it expired.
-			if ( 'active' === $saved_status ) {
-				$renewed_metadata['status'] = 'inactive';
-
-				$this->sync_active_count( $license );
-
-				// Hack saved status so new activation is possible after renewal.
-				$saved_status = 'inactive';
-			}
-
-			// Finally, clear the expired flag.
-			$renewed_metadata['expired'] = 'no';
-
-			$this->update_meta( $renewed_metadata );
+			// Hack saved status so new activation is possible after renewal.
+			$saved_status = 'inactive';
 		}
 
 		// Same client, active status and from activate license form, $request => WP_Error.
@@ -550,7 +604,7 @@ final class Manager implements Options_Interface {
 				__( 'The license for this site has already been %sd.', 'tws-license-manager-server' ),
 				"{$state}"
 			);
-			return $this->request_error( $msg, 400 );
+			return $this->request_error( $msg, 405 );
 		}
 
 		return $this->is_valid_request();
@@ -563,19 +617,6 @@ final class Manager implements Options_Interface {
 	 */
 	private function is_valid_request() {
 		$parameters = $this->parameters;
-
-		// Product slug didn't match with WooCommerce Product Title, $request => WP_Error.
-		// Always check for product slug as it is a required parameter.
-		$product = wc_get_product( $this->license->getProductId() );
-		$error   = $this->request_error( $this->options['name_validate_response'], 404 );
-
-		if (
-			! array_key_exists( 'slug', $parameters )
-			|| ! ( $product instanceof \WC_Product )
-			|| $parameters['slug'] !== $product->get_slug()
-		) {
-			return $error;
-		}
 
 		// Order ID didn't match with WooCommerce order ID, $request => WP_Error.
 		if ( array_key_exists( 'order_id', $parameters ) ) {
@@ -639,7 +680,8 @@ final class Manager implements Options_Interface {
 			return $data;
 		}
 
-		$endpoint = "v2/licenses/{$this->request_type}/{license_key}";
+		$endpoint           = "v2/licenses/{$this->request_type}/{license_key}";
+		$this->active_count = intval( $data['timesActivated'] );
 
 		// Handle validate license for that endpoint and stop processing further.
 		if ( 'v2/licenses/validate/{license_key}' === $endpoint ) {
@@ -653,14 +695,22 @@ final class Manager implements Options_Interface {
 
 		$id = isset( $data['productId'] ) ? (int) $data['productId'] : 0;
 
+		if ( ! $this->is_valid ) {
+			$this->sync_active_count();
+
+			$this->meta['status']  = 'expired';
+			$this->meta['expired'] = 'yes';
+		}
+
 		/**
 		 * WPHOOK: Filter -> License meta data.
 		 *
 		 * @param array     $license_meta Meta value to save to database.
 		 * @param Manager   $this         The manager instance.
+		 * @param string    $context      Where the filter is being applied.
 		 * @var   string[]
 		 */
-		$meta = apply_filters( 'hzfex_license_manager_server_response_license_meta', $this->meta, $this );
+		$meta = apply_filters( 'hzfex_license_manager_server_response_license_meta', $this->meta, $this, 'general' );
 
 		// Check if key is present.
 		if ( $this->meta_key ) {
@@ -691,6 +741,23 @@ final class Manager implements Options_Interface {
 	/**
 	 * Sends response data for validate endpoint.
 	 *
+	 * Using Client {@see Manager::validate_license()} will update
+	 * the license meta on server. Using it manually is not recommended as
+	 * meta will only be updated on server and client license option won't update.
+	 *
+	 * If any error occurs, only error will be sent as additional modified response data.
+	 *
+	 * On cron event, response data sent from here is saved as license option on client.
+	 * * If no error, fully modified response data is sent. {@see Manager::send_response()}.
+	 * * On Client Manager - `{@see Manager::check_license_status()}`.
+	 *
+	 * On WordPress Plugin/Theme Transient Update, if no error, additional modified response data sent are:
+	 * * `state`           - License status or state.
+	 * * `exipresAt`       - License expiry date.
+	 * * `count`           - License times activated count (sent if license has expired).
+	 * * `product_meta`    - The licensed product details.
+	 * * On Client Manager - `{@see Manager::fetch_product_data_from_server()}`.
+	 *
 	 * @param array $data The response data.
 	 *
 	 * @return array The modified response data.
@@ -706,32 +773,40 @@ final class Manager implements Options_Interface {
 		$metadata = $this->get_metadata();
 
 		// No license status meta saved, $data => error.
+		// This only occurs if license validation is triggered
+		// but license has never been activated on client.
 		if ( ! isset( $metadata['status'] ) ) {
 			$data['error'] = $this->response_error( __( 'License status can not be verified.', 'tws-license-manager-server' ), 401 );
 
 			return $data;
 		}
 
+		// Send status & expiry date to update on client.
+		$data['state']     = $metadata['status'];
+		$data['expiresAt'] = $this->license->getExpiresAt();
+
 		// Make license expire when the time comes.
-		if (
-			'expired' === $metadata['status'] &&
-			( ! isset( $metadata['expired'] ) || 'yes' !== $metadata['expired'] )
-		) {
-			$metadata['expired'] = 'yes';
-			$this->update_meta( $metadata );
-		}
-
-		// Send state also.
-		$data['state'] = $metadata['status'];
-
-		if ( is_wp_error( $this->is_license_valid() ) ) {
-			$data['state']     = 'expired';
-			$data['expiresAt'] = $this->license->getExpiresAt();
+		if ( ! $this->is_valid ) {
+			$data['state'] = 'expired';
 
 			// Update metadata when the license gets expired (if not updated already).
 			if ( 'expired' !== $metadata['status'] ) {
+				if ( 'active' === $metadata['status'] ) {
+					$data['count'] = $this->sync_active_count();
+				}
+
 				$metadata['status']  = 'expired';
 				$metadata['expired'] = 'yes';
+
+				/**
+				 * WPHOOK: Filter -> License expired meta data.
+				 *
+				 * @param array     $metadata Meta value to save to database.
+				 * @param Manager   $this     The manager instance.
+				 * @param string    $context  Where the filter is being applied.
+				 * @var   string[]
+				 */
+				$metadata = apply_filters( 'hzfex_license_manager_server_response_license_meta', $metadata, $this, 'expired' );
 
 				$this->update_meta( $metadata );
 			}
@@ -750,8 +825,7 @@ final class Manager implements Options_Interface {
 	 */
 	private function validate_license( array $data, array $metadata ): array {
 		// The license state.
-		$state = (string) $data['state'];
-
+		$state       = (string) $data['state'];
 		$flag        = isset( $this->parameters['flag'] ) ? (string) $this->parameters['flag'] : '';
 		$is_schedule = $flag && 'cron' === $flag;
 		$is_update   = $flag && ( 'update_themes' === $flag || 'update_plugins' === $flag );
@@ -772,16 +846,16 @@ final class Manager implements Options_Interface {
 		// Send product info along with response.
 		$data['product_meta'] = $meta;
 
-		// License is not active, $data => error.
-		if ( 'active' !== $metadata['status'] ) {
-			$data['error'] = $this->response_error( __( 'License is not active.', 'tws-license-manager-server' ), 402 );
+		// License has expired, $data => error.
+		if ( 'expired' === $state ) {
+			$data['error'] = $this->response_error( __( 'License has expired.', 'tws-license-manager-server' ), 403 );
 
 			return $data;
 		}
 
-		// License has expired, $data => error.
-		if ( 'expired' === $state ) {
-			$data['error'] = $this->response_error( __( 'License has expired.', 'tws-license-manager-server' ), 403 );
+		// License is not active, $data => error.
+		if ( 'active' !== $metadata['status'] ) {
+			$data['error'] = $this->response_error( __( 'License is not active.', 'tws-license-manager-server' ), 402 );
 
 			return $data;
 		}
@@ -801,25 +875,23 @@ final class Manager implements Options_Interface {
 	 * @return array
 	 */
 	public function send_response( array $metadata, array $product_meta ): array {
-		// Since license activation count is changed after successful request,
-		// new database call needs to be made to get updated license details.
-		$license = lmfwc_get_license( $this->license_key );
-		$data    = array(
+		$data = array(
 			'key'          => $this->meta_key,
 			'status'       => $metadata['status'],
-			'order_id'     => $license->getOrderId(),
-			'expires_at'   => $license->getExpiresAt(),
-			'product_id'   => $license->getProductId(),
-			'active_count' => $license->getTimesActivated(),
-			'total_count'  => $license->getTimesActivatedMax(),
-			'license_key'  => $license->getDecryptedLicenseKey(),
-			'purchased_on' => $license->getCreatedAt(),
-			'product_meta' => $product_meta,
+			'order_id'     => $this->license->getOrderId(),
+			'expires_at'   => $this->license->getExpiresAt(),
+			'product_id'   => $this->license->getProductId(),
+			'active_count' => $this->active_count,
+			'total_count'  => $this->license->getTimesActivatedMax(),
+			'license_key'  => $this->license_key,
+			'purchased_on' => $this->license->getCreatedAt(),
 		);
 
 		if ( isset( $metadata['email'] ) ) {
 			$data['email'] = $metadata['email'];
 		}
+
+		$data['product_meta'] = $product_meta;
 
 		/**
 		 * WPHOOK: Filter -> before sending the response back.
@@ -829,7 +901,7 @@ final class Manager implements Options_Interface {
 		 * @param array   $metadata The license metadata.
 		 * @var   array
 		 */
-		$response = apply_filters( 'hzfex_license_manager_server_pre_send_response', $data, $license, $metadata );
+		$response = apply_filters( 'hzfex_license_manager_server_pre_send_response', $data, $this->license, $metadata );
 
 		return $response;
 	}
@@ -902,30 +974,26 @@ final class Manager implements Options_Interface {
 	/**
 	 * Checks license expiry date.
 	 *
-	 * @return true|WP_Error True if not expired, WP_Error with expired message otherwise.
+	 * @return bool True if not expired, false otherwise.
 	 *
 	 * @filesource license-manager-for-woocommerce/includes/api/v2/Licenses.php
 	 */
 	public function is_license_valid() {
 		$expiry_date = $this->license->getExpiresAt();
 
-		if ( $expiry_date ) {
-			try {
-				$expires_at   = new \DateTime( $expiry_date );
-				$current_date = new \DateTime( 'now', new \DateTimeZone( 'UTC' ) );
-			} catch ( \Exception $e ) {
-				return $this->request_error( $e->getMessage(), 405 );
-			}
+		if ( ! $expiry_date ) {
+			return false;
+		}
 
-			if ( $current_date > $expires_at ) {
-				$error = sprintf(
-					/* Translators: %s - The license expiry date. */
-					__( 'The license Key expired on %s (UTC).', 'tws-license-manager-server' ),
-					'<b>' . $this->license->getExpiresAt() . '</b>'
-				);
+		try {
+			$expires_at   = new \DateTime( $expiry_date );
+			$current_date = new \DateTime( 'now', new \DateTimeZone( 'UTC' ) );
+		} catch ( \Exception $e ) {
+			return false;
+		}
 
-				return $this->request_error( $error, 405, $this->license->getExpiresAt() );
-			}
+		if ( $current_date > $expires_at ) {
+			return false;
 		}
 
 		return true;
