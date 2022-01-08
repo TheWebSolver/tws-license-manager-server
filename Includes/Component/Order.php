@@ -25,6 +25,7 @@ use LicenseManagerForWooCommerce\Repositories\Resources\License as License_Handl
 use LicenseManagerForWooCommerce\Models\Resources\Generator;
 use LicenseManagerForWooCommerce\Repositories\Resources\Generator as Generator_Handler;
 use TheWebSolver\License_Manager\Single_Instance;
+use WC_Order;
 
 // Exit if accessed directly.
 defined( 'ABSPATH' ) || exit;
@@ -38,11 +39,53 @@ final class Order {
 	use Single_Instance;
 
 	/**
+	 * Renewing order IDs for the parent license order.
+	 *
+	 * @var string
+	 */
+	const RENEWAL_IDS_KEY = 'tws_license_manager_renew_order_ids';
+
+	/**
+	 * The parent order ID which issued the license.
+	 *
+	 * @var int
+	 */
+	private $parent_id = 0;
+
+	/**
+	 * The child (current) order ID which renewed the parent order.
+	 *
+	 * @var int
+	 */
+	private $id;
+
+	/**
+	 * The current Order instance.
+	 *
+	 * @var WC_Order
+	 */
+	private $order;
+
+	/**
+	 * The license instance.
+	 *
+	 * @var License
+	 */
+	private $license;
+
+	/**
+	 * The license key to renew.
+	 *
+	 * @var string
+	 */
+	private $license_key;
+
+	/**
 	 * Sets up WooCommerce order.
 	 *
 	 * @return Order
 	 */
-	public function instance() {
+	public function instance(): Order {
 		$this->handle_order_status_transition();
 
 		return $this;
@@ -78,99 +121,84 @@ final class Order {
 	/**
 	 * Validates order that has license key entered during checkout when placing new order.
 	 *
-	 * @param int       $order_id The current order ID.
-	 * @param \WC_Order $order    The current order.
+	 * @param int      $order_id The current order ID.
+	 * @param WC_Order $order    The current order.
 	 */
-	public function validate_order_with_license( $order_id, $order ) {
+	public function validate_order_with_license( int $order_id, WC_Order $order ) {
 		// Hack we did at checkout for lmfwc order meta was unsuccessful, stop further processing.
 		if ( 1 !== absint( get_post_meta( $order_id, 'lmfwc_order_complete', true ) ) ) {
 			return;
 		}
 
-		$parent_order_id = absint( get_post_meta( $order_id, Checkout::PARENT_ORDER_KEY, true ) );
+		$license_key       = get_post_meta( $order_id, Checkout::PARENT_ORDER_KEY, true );
+		$this->license     = lmfwc_get_license( $license_key );
+		$this->license_key = $license_key;
+		$this->id          = $order_id;
+		$this->order       = $order;
 
-		$this->update_license_validity( $parent_order_id );
+		$this->update_license_validity();
 	}
 
 	/**
-	 * Gets all license from an order.
+	 * Updates license validity.
 	 *
-	 * @param int $order_id The order ID for which license(s) to retrieve.
-	 *
-	 * @return bool True if successful, false otherwise.
+	 * @return array|false Updated expiry date and status in an array, false if can't update.
 	 */
-	private function update_license_validity( $order_id ) {
-		$licenses = License_Handler::instance()->findAllBy( array( 'order_id' => $order_id ) );
-		$complete = false;
-
-		// Order must save all generated licenses in an array.
-		if ( ! is_array( $licenses ) ) {
-			return $complete;
+	private function update_license_validity() {
+		// Bail early if not a valid license.
+		if ( ! $this->license ) {
+			return false;
 		}
 
-		/** @var License $license The License object. */ // phpcs:ignore
-		foreach ( $licenses as $license ) {
-			// Get option key (created from license key field at checkout).
-			$key = sha1( $license->getDecryptedLicenseKey() );
+		$this->parent_id = $this->license->getOrderId();
 
-			// Get checkout option value.
-			$value  = get_option( $key );
-			$option = is_array( $value ) ? (array) $value : array();
-
-			// Get parent order ID from option.
-			$parent_id = isset( $option['order_id'] ) ? (int) $option['order_id'] : 0;
-
-			// Get license ID entered during checkout from option.
-			$license_id = isset( $option['license_id'] ) ? (int) $option['license_id'] : 0;
-
-			// Perform tasks for license whose order ID and License key matches.
-			if ( ( $parent_id === (int) $order_id ) && ( $license->getId() === $license_id ) ) {
-
-				// Check if expiration date set for license.
-				if ( $license->getExpiresAt() ) {
-					// Get the product ID for which the license is issued.
-					$id = $license->getProductId();
-
-					// Check if generator was used for issuing license.
-					$use = 1 === absint( get_post_meta( $id, Product::USE_GENERATOR_META, true ) );
-
-					// Get the generator ID if product license was issued by generator.
-					$get = $use ? get_post_meta( $id, Product::ASSIGNED_GENERATOR_META, true ) : 0;
-
-					// Check if generator ID is valid.
-					if ( $get ) {
-						/** @var Generator $generator The Generator object. */ // phpcs:ignore
-						$generator = Generator_Handler::instance()->find( $get );
-
-						// Check if generator has number of days for expiry set.
-						if ( $generator->getExpiresIn() ) {
-							$this->update_expiry_date( $license, $generator, true );
-
-							// Clear the checkout option.
-							delete_option( $key );
-
-							// Flag successful update of the license.
-							$complete = true;
-						}
-					}
-				}
-
-				// Found license, updated expiry date. Stop futher execution.
-				break;
-			}
+		// Bail if expiration date isn't set for license.
+		if ( ! $this->license->getExpiresAt() ) {
+			return false;
 		}
 
-		return $complete;
+		// Get the product ID for which the license is issued.
+		$id = $this->license->getProductId();
+
+		// Check if generator is used for issuing license.
+		$is_used = 1 === absint( get_post_meta( $id, Product::USE_GENERATOR_META, true ) );
+
+		// Get the generator ID if product license was issued by generator.
+		$gen_id = $is_used ? get_post_meta( $id, Product::ASSIGNED_GENERATOR_META, true ) : 0;
+
+		// Bail if generator ID is not valid.
+		if ( ! $gen_id ) {
+			return false;
+		}
+
+		/**
+		 * The current license generator.
+		 *
+		 * @var Generator $generator The Generator object.
+		 */
+		$generator = Generator_Handler::instance()->find( $gen_id );
+
+		// Bail if generator has number of days for expiry not set.
+		if ( ! $generator || ! $generator->getExpiresIn() ) {
+			return false;
+		}
+
+		return $this->update_expiry_date( $this->license, $generator, true );
 	}
 
 	/**
 	 * Updates license to new expiry date.
 	 *
+	 * Handy API that can be used for testing out too.
+	 * Set the `$update` value to `false` while testing.
+	 *
 	 * @param License   $license   The ordered product license key.
 	 * @param Generator $generator The ordered product license generator.
 	 * @param bool      $update    True to update the license, false to return data to be updated.
+	 *
+	 * @return (string|int)[]
 	 */
-	public function update_expiry_date( License $license, Generator $generator, $update = false ) {
+	public function update_expiry_date( License $license, Generator $generator, bool $update = false ) {
 		// Extend license validity by generator expiry days (same format used by lmfwc).
 		$expires_in = 'P' . $generator->getExpiresIn() . 'D';
 
@@ -199,8 +227,23 @@ final class Order {
 		$license_expiry_time = new \DateTime( $expires_at );
 		$maximum_grace_time  = new \DateTime( 'now', new \DateTimeZone( 'UTC' ) );
 
+		/**
+		 * WPHOOK: Filter -> Extend expiry time from the renewed time if license expired.
+		 *
+		 * @param bool $extend Whether to start expiry from current time or previous expiry time.
+		 * @var   bool
+		 * @example Usage
+		 *
+		 * License expired on Jan 8, 2022.
+		 * User renewed license on March 8, 2022.
+		 * Generator has expiry days as 365 (a year).
+		 * * If true, new validity will be March 8, 2023.
+		 * * If false, new validity will be Jan 8, 2023.
+		 */
+		$extend = apply_filters( 'hzfex_license_manager_server_extend_expiration_time', true );
+
 		// If license has expired, create new expiry time from the current time.
-		if ( $license_expiry_time < $maximum_grace_time ) {
+		if ( ( $license_expiry_time < $maximum_grace_time ) && $extend ) {
 			$new_expiry = $current_time->add( $interval )->format( $format );
 		}
 
@@ -211,6 +254,43 @@ final class Order {
 
 		if ( $update ) {
 			License_Handler::instance()->update( $license->getId(), $data );
+
+			$meta     = get_post_meta( $this->parent_id, self::RENEWAL_IDS_KEY, true );
+			$meta     = is_array( $meta ) ? $meta : array();
+			$old_meta = $meta;
+			$meta[]   = $this->id;
+
+			$args = array(
+				'customer' => 0,
+				'user'     => false,
+				'note'     => sprintf(
+					/* translators: %s - The license key. */
+					__( 'Successfully renewed License Key: "%s".', 'tws-license-manager-server' ),
+					$this->license_key
+				),
+			);
+
+			/**
+			 * WPHOOK: Filter -> Order note message after license renewal.
+			 *
+			 * @param array  $args        Note args. Possible key/value is:
+			 * * `int`    `customer` - Is this a note for the customer?.
+			 * * `bool`   `user`     - Was the note added by a user?.
+			 * * `string` `note`     - The note to add.
+			 * @param string $license_key The license key which is renewed.
+			 * @var   (int|bool|string)[]
+			 */
+			$note = apply_filters( 'hzfex_license_manager_server_add_order_note', $args, $this->license_key );
+
+			$this->order->add_order_note( $note['note'], $note['customer'], $note['user'] );
+
+			// Push and save current order ID to meta value of license parent order ID.
+			// This creates a parent/child relation saving all child order IDs to the license order.
+			// This can then be used for showing all child orders, or for any other purpose.
+			update_post_meta( $this->parent_id, self::RENEWAL_IDS_KEY, $meta, $old_meta );
+
+			// Successfully renewed license. Clear license parent order ID from current order.
+			delete_post_meta( $this->id, Checkout::PARENT_ORDER_KEY );
 		}
 
 		return $data;
